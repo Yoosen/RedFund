@@ -68,7 +68,7 @@ Red Fund 是独立开发的第三方工具，与东方财富、腾讯、同花�
 
 如对本政策、数据处理或应用功能有疑问，可以通过以下方式联系：
 
-- [报告问题](https://github.com/Yoosen/red-fund/issues/new?template=issue_template_bug.md)
-- [提出建议](https://github.com/Yoosen/red-fund/issues/new?template=issue_template_feature.md)
+- [报告问题](https://github.com/Yoosen/RedFund/issues/new?template=issue_template_bug.md)
+- [提出建议](https://github.com/Yoosen/RedFund/issues/new?template=issue_template_feature.md)
 
-在线隐私政策固定地址：<https://github.com/Yoosen/red-fund/blob/main/PRIVACY.md>
+在线隐私政策固定地址：<https://github.com/Yoosen/RedFund/blob/main/PRIVACY.md>

@@ -83,7 +83,7 @@ async function main() {
   const previousTag = await readPreviousTag();
   if (previousTag) {
     const tag = `v${version}`;
-    const url = `https://github.com/Yoosen/red-fund/compare/${encodeURIComponent(previousTag)}...${encodeURIComponent(tag)}`;
+    const url = `https://github.com/Yoosen/RedFund/compare/${encodeURIComponent(previousTag)}...${encodeURIComponent(tag)}`;
     entry = `${entry.trimEnd()}\n\n## 代码变更\n\n[查看 ${previousTag} → ${tag} 的完整代码差异](${url})\n`;
   }
 
