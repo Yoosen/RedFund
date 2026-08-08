@@ -53,9 +53,9 @@ struct AppUpdateService: Sendable {
     /// 网络会话。
     private let session: URLSession
     /// 最新发布页（用于重定向解析最新 tag）。
-    private let latestReleaseURL = URL(string: "https://github.com/yoosen/red-fund/releases/latest")!
+    private let latestReleaseURL = URL(string: "https://github.com/Yoosen/RedFund/releases/latest")!
     /// 发布列表基础地址。
-    private let releasesBaseURL = URL(string: "https://github.com/yoosen/red-fund/releases")!
+    private let releasesBaseURL = URL(string: "https://github.com/Yoosen/RedFund/releases")!
     /// 交互式检查超时（秒）。
     private let interactiveAPIRequestTimeout: TimeInterval
     /// 发布订阅信息（latest-mac.yml）请求超时。
@@ -223,7 +223,7 @@ struct AppUpdateService: Sendable {
 
     /// 主方案：调用 GitHub API 获取最新 release 信息。
     private func checkGitHubAPI(currentVersion: String, timeout: TimeInterval) async throws -> AppUpdateStatus {
-        let apiURL = URL(string: "https://api.github.com/repos/yoosen/red-fund/releases/latest")!
+        let apiURL = URL(string: "https://api.github.com/repos/Yoosen/RedFund/releases/latest")!
         var request = URLRequest(url: latestReleaseURL)
         request.url = apiURL
         request.cachePolicy = .reloadIgnoringLocalCacheData

@@ -6,11 +6,11 @@ final class AppExternalLinksTests: XCTestCase {
     func testFeedbackTargetsAreExact() {
         XCTAssertEqual(
             AppExternalLinks.bugReportURL.absoluteString,
-            "https://github.com/yoosen/red-fund/issues/new?template=issue_template_bug"
+            "https://github.com/Yoosen/RedFund/issues/new?template=issue_template_bug"
         )
         XCTAssertEqual(
             AppExternalLinks.featureRequestURL.absoluteString,
-            "https://github.com/yoosen/red-fund/issues/new?template=issue_template_feature"
+            "https://github.com/Yoosen/RedFund/issues/new?template=issue_template_feature"
         )
     }
 

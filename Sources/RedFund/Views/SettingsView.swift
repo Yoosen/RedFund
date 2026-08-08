@@ -1433,7 +1433,7 @@ struct SettingsView: View {
         }
 
         let content = UNMutableNotificationContent()
-        content.title = "red-fund 测试提醒"
+        content.title = "Red Fund 测试提醒"
         content.body = "如果你看到这条通知，说明系统通知权限正常。"
         content.sound = .default
 

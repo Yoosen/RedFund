@@ -5715,7 +5715,9 @@ struct FundDetailView: View {
             }
 
             if trendPoints.count >= 2 {
-                FundTrendMiniChart(points: trendPoints, tradeMarkers: netValueTradeMarkers)
+                let holdingCost = fund.migratedCost
+                let holdingCostPoint = (holdingCost ?? 0) > 0 ? latestNetValuePoint : nil
+                FundTrendMiniChart(points: trendPoints, holdingCost: holdingCost, holdingCostPoint: holdingCostPoint)
                     .frame(height: 116)
             } else {
                 emptySupplementView(isSupplementLoading ? "走势加载中..." : "暂无走势数据")
@@ -5964,36 +5966,6 @@ struct FundDetailView: View {
 
     private var netValueTrendRangeTint: Color {
         toneColor(for: fund.todayRate)
-    }
-
-    private var netValueTradeMarkers: [FundTrendTradeMarker] {
-        recentTradeRecords.compactMap { record in
-            guard record.status == .confirmed else { return nil }
-
-            switch record.kind {
-            case .newFund, .buy:
-                return FundTrendTradeMarker(
-                    id: record.id,
-                    kind: .buy,
-                    dateText: record.acceptedDate,
-                    price: record.price
-                )
-            case .sell, .conversionOut:
-                return FundTrendTradeMarker(
-                    id: record.id,
-                    kind: .sell,
-                    dateText: record.acceptedDate,
-                    price: record.price
-                )
-            case .conversionIn:
-                return FundTrendTradeMarker(
-                    id: record.id,
-                    kind: .buy,
-                    dateText: record.acceptedDate,
-                    price: record.price
-                )
-            }
-        }
     }
 
     private var pendingTradeSummaryTitle: String? {
@@ -7286,21 +7258,11 @@ private struct FundIntradayRateChart: View {
     }
 }
 
-private enum FundTrendTradeMarkerKind {
-    case buy
-    case sell
-}
-
-private struct FundTrendTradeMarker: Identifiable, Equatable {
-    var id: String
-    var kind: FundTrendTradeMarkerKind
-    var dateText: String
-    var price: Double?
-}
-
+/// 净值业绩走势图。仅展示一条持仓成本参考线（及成本点位），不再叠加多笔购入标记。
 private struct FundTrendMiniChart: View {
     let points: [FundNetValuePoint]
-    let tradeMarkers: [FundTrendTradeMarker]
+    let holdingCost: Double?
+    let holdingCostPoint: FundNetValuePoint?
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var hoveredIndex: Int?
@@ -7315,12 +7277,14 @@ private struct FundTrendMiniChart: View {
                     ZStack {
                         chartGrid
                         chartAxes
+                        if let costPoint = holdingCostPoint,
+                           let cost = holdingCost, cost.isFinite, cost > 0 {
+                            costReferenceLine(at: cost, in: proxy.size)
+                            costReferenceDot(for: costPoint, at: cost, in: proxy.size)
+                            costReferenceLabel(at: cost, in: proxy.size)
+                        }
                         linePath(in: proxy.size)
                             .stroke(lineColor, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
-                        ForEach(resolvedTradeMarkers) { marker in
-                            tradeMarkerView(marker)
-                                .position(markerPosition(for: marker, in: proxy.size))
-                        }
                         if let hoveredIndex,
                            points.indices.contains(hoveredIndex) {
                             hoverOverlay(for: hoveredIndex, in: proxy.size)
@@ -7381,9 +7345,9 @@ private struct FundTrendMiniChart: View {
     }
 
     private var yValueBounds: (min: Double, max: Double) {
-        let values = points.map(\.value) + tradeMarkers.compactMap { marker in
-            guard let price = marker.price, price.isFinite else { return nil }
-            return price
+        var values = points.map(\.value)
+        if let cost = holdingCost, cost.isFinite {
+            values.append(cost)
         }
         guard let minValue = values.min(),
               let maxValue = values.max()
@@ -7413,24 +7377,51 @@ private struct FundTrendMiniChart: View {
         .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
-    private var resolvedTradeMarkers: [ResolvedFundTrendTradeMarker] {
-        tradeMarkers.compactMap { marker in
-            guard let index = nearestPointIndex(for: marker.dateText) else { return nil }
-            let fallbackValue = points[index].value
-            let value: Double
-            if let price = marker.price, price.isFinite {
-                value = price
-            } else {
-                value = fallbackValue
-            }
-
-            return ResolvedFundTrendTradeMarker(
-                id: marker.id,
-                kind: marker.kind,
-                pointIndex: index,
-                value: value
-            )
+    private func costReferenceLine(at cost: Double, in size: CGSize) -> some View {
+        Path { path in
+            let y = yPosition(for: cost, height: size.height)
+            path.move(to: CGPoint(x: 0, y: y))
+            path.addLine(to: CGPoint(x: size.width, y: y))
         }
+        .stroke(holdingCostColor, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+        .allowsHitTesting(false)
+    }
+
+    private func costReferenceDot(for point: FundNetValuePoint, at cost: Double, in size: CGSize) -> some View {
+        let x = CGFloat(points.count - 1) / CGFloat(points.count - 1) * size.width
+        let y = yPosition(for: cost, height: size.height)
+        return Circle()
+            .fill(holdingCostColor)
+            .frame(width: 6, height: 6)
+            .overlay(
+                Circle()
+                    .stroke(PanelDesign.cardBackground.opacity(colorScheme == .dark ? 0.9 : 0.96), lineWidth: 1.3)
+            )
+            .position(CGPoint(x: x, y: y))
+            .allowsHitTesting(false)
+    }
+
+    private func costReferenceLabel(at cost: Double, in size: CGSize) -> some View {
+        let labelWidth: CGFloat = 44
+        let y = min(max(yPosition(for: cost, height: size.height), 9), max(size.height - 9, 9))
+        return Text("成本 \(numberText(cost))")
+            .font(.system(size: 9, weight: .semibold))
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .foregroundStyle(holdingCostColor)
+            .frame(width: labelWidth, height: 16)
+            .background(hoverAxisLabelBackground, in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(holdingCostColor.opacity(colorScheme == .dark ? 0.28 : 0.20), lineWidth: 0.65)
+            )
+            .position(x: size.width - labelWidth / 2 - 4, y: y)
+            .allowsHitTesting(false)
+    }
+
+    private var holdingCostColor: Color {
+        .orange
     }
 
     private func hoverOverlay(for index: Int, in size: CGSize) -> some View {
@@ -7487,54 +7478,10 @@ private struct FundTrendMiniChart: View {
             : Color.white.opacity(0.94)
     }
 
-    private func tradeMarkerView(_ marker: ResolvedFundTrendTradeMarker) -> some View {
-        Circle()
-            .fill(tradeMarkerColor(marker.kind))
-            .frame(width: 7, height: 7)
-            .overlay(
-                Circle()
-                    .stroke(PanelDesign.cardBackground.opacity(colorScheme == .dark ? 0.88 : 0.96), lineWidth: 1.4)
-            )
-            .shadow(color: tradeMarkerColor(marker.kind).opacity(colorScheme == .dark ? 0.38 : 0.26), radius: 3, x: 0, y: 1)
-            .accessibilityHidden(true)
-    }
-
-    private func tradeMarkerColor(_ kind: FundTrendTradeMarkerKind) -> Color {
-        switch kind {
-        case .buy:
-            toneColor(for: 1)
-        case .sell:
-            .redFundGreen
-        }
-    }
-
     private func nearestIndex(for x: CGFloat, width: CGFloat) -> Int? {
         guard points.count > 1, width > 0 else { return nil }
         let ratio = min(max(x / width, 0), 1)
         return min(max(Int((ratio * CGFloat(points.count - 1)).rounded()), 0), points.count - 1)
-    }
-
-    private func nearestPointIndex(for markerDateText: String) -> Int? {
-        guard !points.isEmpty,
-              let markerDate = DateOnlyFormatter.parse(markerDateText)
-        else {
-            return nil
-        }
-
-        if let exactIndex = points.indices.first(where: { dateOnlyText(points[$0].timestamp) == markerDateText }) {
-            return exactIndex
-        }
-
-        let firstDate = date(from: points[0].timestamp)
-        let lastDate = date(from: points[points.count - 1].timestamp)
-        guard markerDate >= firstDate && markerDate <= lastDate else {
-            return nil
-        }
-
-        return points.indices.min { lhs, rhs in
-            abs(points[lhs].timestamp - Int64(markerDate.timeIntervalSince1970 * 1000)) <
-                abs(points[rhs].timestamp - Int64(markerDate.timeIntervalSince1970 * 1000))
-        }
     }
 
     private func pointPosition(for index: Int, in size: CGSize) -> CGPoint {
@@ -7547,19 +7494,6 @@ private struct FundTrendMiniChart: View {
         }
         let x = CGFloat(index) / CGFloat(points.count - 1) * size.width
         let y = yPosition(for: points[index].value, height: size.height)
-        return CGPoint(x: x, y: y)
-    }
-
-    private func markerPosition(for marker: ResolvedFundTrendTradeMarker, in size: CGSize) -> CGPoint {
-        guard points.count > 1,
-              size.width > 0,
-              size.height > 0
-        else {
-            return .zero
-        }
-
-        let x = CGFloat(marker.pointIndex) / CGFloat(points.count - 1) * size.width
-        let y = yPosition(for: marker.value, height: size.height)
         return CGPoint(x: x, y: y)
     }
 
@@ -7613,13 +7547,6 @@ private struct FundTrendMiniChart: View {
         Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000)
     }
 
-}
-
-private struct ResolvedFundTrendTradeMarker: Identifiable {
-    var id: String
-    var kind: FundTrendTradeMarkerKind
-    var pointIndex: Int
-    var value: Double
 }
 
 let panelBorderColor = Color(nsColor: .separatorColor).opacity(0.12)

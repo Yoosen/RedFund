@@ -29,7 +29,7 @@ function generateArguments(directory, extra = []) {
     "--version", "1.0.42",
     "--tag", "v1.0.42",
     "--previous-tag", "v1.0.41",
-    "--repository", "yoosen/red-fund",
+    "--repository", "Yoosen/RedFund",
     "--zip-name", "app.zip",
     "--zip-sha", "zip-sha",
     "--dmg-name", "app.dmg",

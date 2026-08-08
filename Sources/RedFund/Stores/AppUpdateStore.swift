@@ -46,21 +46,17 @@ final class AppUpdateStore {
     private let service: AppUpdateService
     private var checkGeneration = 0
     private var currentCheckMode: AppUpdateCheckMode?
-    /// 最近一次发起检查时使用的模式，用于区分状态是手动还是自动产生。
-    private var lastCheckMode: AppUpdateCheckMode?
 
-    /// 供 UI 使用的展示状态：会结合 `autoUpdateCheckEnabled` 抑制被动的自动检查提示。
-    /// 关闭自动检查时，除了用户手动操作链（检查中/下载中/已下载/安装中）外，一律视为 `.idle`，
-    /// 从而主界面不再提示、右键菜单展示「检查更新」入口。
+    /// 供 UI 使用的展示状态：会结合 `autoUpdateCheckEnabled` 抑制更新提示。
+    /// 关闭自动检查时，完全不提示更新相关信息——已检查到的新版本、已是最新、失败、检查中、
+    /// 空闲一律视为 `.idle`；仅保留用户已在进行的主动安装操作链（下载中/已下载/安装中），
+    /// 从而主界面不再展示「发现新版本/需要下载」，右键菜单也回到静默状态。
     var presentationStatus: AppUpdateStatus {
         guard !autoUpdateCheckEnabled else { return status }
         switch status {
-        case .checking, .downloading, .downloaded, .installing:
+        case .downloading, .downloaded, .installing:
             return status
-        case .available, .upToDate, .failed, .idle:
-            if let lastCheckMode, lastCheckMode == .interactive {
-                return status
-            }
+        case .available, .upToDate, .failed, .checking, .idle:
             return .idle
         }
     }
@@ -91,7 +87,6 @@ final class AppUpdateStore {
         checkGeneration += 1
         let generation = checkGeneration
         currentCheckMode = mode
-        lastCheckMode = mode
         status = .checking
         appUpdateStoreLogger.info("Start update check mode=\(String(describing: mode), privacy: .public) generation=\(generation, privacy: .public) currentVersion=\(currentVersion, privacy: .public)")
         return AppUpdateCheckRequest(

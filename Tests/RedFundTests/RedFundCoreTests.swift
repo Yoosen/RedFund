@@ -15477,23 +15477,23 @@ final class RedFundCoreTests: XCTestCase {
     }
 
     private static func githubLatestReleaseAPIEndpoint() -> String {
-        "https://api.github.com/repos/yoosen/red-fund/releases/latest"
+        "https://api.github.com/repos/Yoosen/RedFund/releases/latest"
     }
 
     private static func githubLatestReleaseWebEndpoint() -> String {
-        "https://github.com/yoosen/red-fund/releases/latest"
+        "https://github.com/Yoosen/RedFund/releases/latest"
     }
 
     private static func githubReleaseTagURL(version: String) -> String {
-        "https://github.com/yoosen/red-fund/releases/tag/v\(version)"
+        "https://github.com/Yoosen/RedFund/releases/tag/v\(version)"
     }
 
     private static func githubMacReleaseFeedEndpoint(version: String) -> String {
-        "https://github.com/yoosen/red-fund/releases/download/v\(version)/latest-mac.yml"
+        "https://github.com/Yoosen/RedFund/releases/download/v\(version)/latest-mac.yml"
     }
 
     private static func githubZipDownloadURL(version: String) -> String {
-        "https://github.com/yoosen/red-fund/releases/download/v\(version)/red-fund-\(version)-arm64.zip"
+        "https://github.com/Yoosen/RedFund/releases/download/v\(version)/red-fund-\(version)-arm64.zip"
     }
 
     private static func githubReleaseResponse(version: String) -> String {

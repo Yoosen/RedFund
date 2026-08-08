@@ -4,19 +4,19 @@ import Foundation
 enum AppExternalLinks {
     /// 隐私政策与免责声明页面。
     static let privacyPolicyURL = URL(
-        string: "https://github.com/yoosen/red-fund/blob/main/PRIVACY.md"
+        string: "https://github.com/Yoosen/RedFund/blob/main/PRIVACY.md"
     )!
     /// GitHub Issues 选择模板入口。
     static let issueChooserURL = URL(
-        string: "https://github.com/yoosen/red-fund/issues/new/choose"
+        string: "https://github.com/Yoosen/RedFund/issues/new/choose"
     )!
     /// 提交 Bug 报告的模板链接。
     static let bugReportURL = URL(
-        string: "https://github.com/yoosen/red-fund/issues/new?template=issue_template_bug"
+        string: "https://github.com/Yoosen/RedFund/issues/new?template=issue_template_bug"
     )!
     /// 提交功能建议的模板链接。
     static let featureRequestURL = URL(
-        string: "https://github.com/yoosen/red-fund/issues/new?template=issue_template_feature"
+        string: "https://github.com/Yoosen/RedFund/issues/new?template=issue_template_feature"
     )!
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_REPO="yoosen/red-fund"
+DEFAULT_REPO="Yoosen/RedFund"
 PACKAGE_SCRIPT="package"
 RELEASE_DIR="release/swift"
 APP_BUNDLE="dist/Red Fund.app"
@@ -75,7 +75,7 @@ Options:
   --bump patch|minor|major
                          基于 package.json 自动升级版本
   --tag TAG              指定发布 tag；默认 v<package.json version>
-  --repo OWNER/REPO      GitHub 仓库；默认 yoosen/red-fund
+  --repo OWNER/REPO      GitHub 仓库；默认 Yoosen/RedFund
   --notes-file FILE      覆盖 GitHub Release 正文；片段仍写入 Changelog
   --allow-empty-notes    显式允许没有变更片段的纯重新打包发布
   --yes                  跳过交互确认

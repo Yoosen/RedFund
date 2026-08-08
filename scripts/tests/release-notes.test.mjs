@@ -30,7 +30,7 @@ function releaseContext(overrides = {}) {
     version: "1.0.42",
     tag: "v1.0.42",
     previousTag: "v1.0.41",
-    repository: "yoosen/red-fund",
+    repository: "Yoosen/RedFund",
     assets: {
       zip: { name: "red-fund-1.0.42-arm64-swift.zip", sha256: "zip-sha" },
       dmg: { name: "red-fund-1.0.42-arm64-swift.dmg", sha256: "dmg-sha" },
@@ -168,7 +168,7 @@ test("builds categorized release notes in stable product-facing order", () => {
   }
   assert.match(notes, /- 新增结构化发布说明。/);
   assert.match(notes, /ZIP SHA-256：zip-sha/);
-  assert.match(notes, /\[v1\.0\.41\.\.\.v1\.0\.42\]\(https:\/\/github\.com\/yoosen\/red-fund\/compare\/v1\.0\.41\.\.\.v1\.0\.42\)/);
+  assert.match(notes, /\[v1\.0\.41\.\.\.v1\.0\.42\]\(https:\/\/github\.com\/Yoosen\/RedFund\/compare\/v1\.0\.41\.\.\.v1\.0\.42\)/);
 });
 
 test("sorts entries by source within each category", () => {

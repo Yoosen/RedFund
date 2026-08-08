@@ -383,8 +383,74 @@ struct FundQuoteService {
         return quotes
     }
 
-    /// 获取某日期的历史净值（东方财富 F10 接口）。
+    /// 获取某日期的历史净值，按交易日期严格匹配。
+    /// 旧版 HTML 端点（fundf10.eastmoney.com/F10DataApi.aspx）已失效、常返回 404，
+    /// 会导致依赖历史净值的旧交易长期无法确认。故优先使用东财 JSON F10 接口，
+    /// 失败再回退净值走势 JS，最后才用旧版 HTML 接口做兼容兜底。
     private func fetchHistoricalNetValue(code: String, date: String) async throws -> Double? {
+        if let value = try? await fetchCurrentHistoricalNetValue(code: code, date: date),
+           value > 0 {
+            return value
+        }
+
+        if let value = try? await fetchTrendHistoricalNetValue(code: code, date: date),
+           value > 0 {
+            return value
+        }
+
+        // Keep the legacy HTML route as a final compatibility fallback. It is
+        // no longer the primary source because the public endpoint currently
+        // returns HTTP 404, but some mirrored environments may still serve it.
+        return try await fetchLegacyHistoricalNetValue(code: code, date: date)
+    }
+
+    private func fetchCurrentHistoricalNetValue(code: String, date: String) async throws -> Double? {
+        var components = URLComponents(string: "https://api.fund.eastmoney.com/f10/lsjz")!
+        components.queryItems = [
+            URLQueryItem(name: "fundCode", value: code),
+            URLQueryItem(name: "pageIndex", value: "1"),
+            URLQueryItem(name: "pageSize", value: "20"),
+            URLQueryItem(name: "startDate", value: date),
+            URLQueryItem(name: "endDate", value: date)
+        ]
+        guard let url = components.url else {
+            throw QuoteError.invalidResponse
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("https://fundf10.eastmoney.com/", forHTTPHeaderField: "Referer")
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+            forHTTPHeaderField: "User-Agent"
+        )
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode)
+        else {
+            throw QuoteError.invalidResponse
+        }
+
+        let payload = try JSONDecoder().decode(EastmoneyHistoricalNetValueResponse.self, from: data)
+        guard payload.errorCode == 0 else {
+            throw QuoteError.invalidResponse
+        }
+        guard let row = payload.data?.rows?.first(where: { $0.date?.value == date }) else {
+            return nil
+        }
+        let value = Double(row.netValue?.value ?? "") ?? 0
+        return value > 0 && value.isFinite ? value : nil
+    }
+
+    private func fetchTrendHistoricalNetValue(code: String, date: String) async throws -> Double? {
+        let points = try await fetchNetValueHistory(code: code)
+        return points.first { point in
+            let pointDate = Date(timeIntervalSince1970: TimeInterval(point.timestamp) / 1000)
+            return DateOnlyFormatter.string(from: pointDate) == date
+        }?.value
+    }
+
+    private func fetchLegacyHistoricalNetValue(code: String, date: String) async throws -> Double? {
         let url = URL(string: "https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=\(code)&page=1&per=1&sdate=\(date)&edate=\(date)")!
         var request = URLRequest(url: url)
         request.setValue(
@@ -392,7 +458,12 @@ struct FundQuoteService {
             forHTTPHeaderField: "User-Agent"
         )
 
-        let (data, _) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode)
+        else {
+            throw QuoteError.invalidResponse
+        }
         guard let text = decodedText(data) else {
             throw QuoteError.invalidResponse
         }
@@ -974,6 +1045,43 @@ struct FundQuoteService {
             return nil
         }
         return cells[index]
+    }
+
+    /// 东财 JSON F10 历史净值接口（`/f10/lsjz`）响应。
+    private struct EastmoneyHistoricalNetValueResponse: Decodable {
+        let errorCode: Int
+        let errorMessage: String?
+        let data: EastmoneyHistoricalNetValueData?
+
+        enum CodingKeys: String, CodingKey {
+            case errorCode = "ErrCode"
+            case errorMessage = "ErrMsg"
+            case data = "Data"
+        }
+
+        struct EastmoneyHistoricalNetValueData: Decodable {
+            let rows: [EastmoneyHistoricalNetValueRow]?
+            let totalCount: Int?
+
+            enum CodingKeys: String, CodingKey {
+                case rows = "LSJZList"
+                case totalCount = "TotalCount"
+            }
+        }
+
+        struct EastmoneyHistoricalNetValueRow: Decodable {
+            let date: LossyString?
+            let netValue: LossyString?
+            let accumulatedNetValue: LossyString?
+            let rate: LossyString?
+
+            enum CodingKeys: String, CodingKey {
+                case date = "FSRQ"
+                case netValue = "DWJZ"
+                case accumulatedNetValue = "LJJZ"
+                case rate = "JZZZL"
+            }
+        }
     }
 
     /// 从文本中提取 5~6 位数字作为股票代码。

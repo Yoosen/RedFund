@@ -14,7 +14,7 @@
     "test:release:unit": "node scripts/run-release-tests.mjs --unit",
     "test:release": "node scripts/run-release-tests.mjs",
     "test:readme": "node --test scripts/tests/project-growth-card.test.mjs",
-    "readme:growth": "node scripts/generate-project-growth-card.mjs --repo yoosen/red-fund --output-dir screenshots",
+    "readme:growth": "node scripts/generate-project-growth-card.mjs --repo Yoosen/RedFund --output-dir screenshots",
     "release": "./scripts/release.sh --bump patch",
     "release:dry": "./scripts/release.sh --dry-run --bump patch --yes",
     "release-all": "./scripts/release.sh --bump patch",
@@ -28,7 +28,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yoosen/red-fund.git"
+    "url": "git+https://github.com/Yoosen/RedFund.git"
   },
   "author": {
     "name": "yoosen",
@@ -36,7 +36,7 @@
   },
   "license": "GPL-3.0",
   "bugs": {
-    "url": "https://github.com/yoosen/red-fund/issues"
+    "url": "https://github.com/Yoosen/RedFund/issues"
   },
   "keywords": [
     "swift",
@@ -47,7 +47,7 @@
     "chinese",
     "funds"
   ],
-  "homepage": "https://github.com/yoosen/red-fund",
+  "homepage": "https://github.com/Yoosen/RedFund",
   "devDependencies": {},
   "dependencies": {},
   "devEngines": {
