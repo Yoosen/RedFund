@@ -1,0 +1,124 @@
+name: Tag Release
+
+# 打 tag（v* 形式，如 v1.0.57）并 push 到远程时自动编译、打包、生成发布说明并上传构建产物。
+#
+# 说明：本仓库未配置 Apple Developer 证书，因此采用 ad-hoc 签名（RED_FUND_ALLOW_ADHOC=1），
+# 产物仅用于验证「打 tag 时代码可编译、可打包」，NOT 经过公证，下载后会被 Gatekeeper 拦截，
+# 不适合对外分发。如需正式签名+公证的 DMG，请配置 Apple Developer 证书与 notary 凭据
+# （RED_FUND_SIGN_IDENTITY / notarytool profile）后移除该环境变量。
+#
+# 发版前请务必：
+#   1. 将 package.json 的 "version" 改为与 tag 一致的三段式（如 1.0.57，不能是 1.1）；
+#   2. 在 .release-notes/changes.md 中维护本次发版说明（详见 .release-notes/README.md）。
+# 发版成功后本 workflow 会自动把 changes.md 内容追加到 .release-notes/archive.md 顶部，
+# 并清空 changes.md，随后将这两处改动 commit 回仓库供下次复用。
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 需要完整历史以定位上一个 tag
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Resolve version and previous tag
+        id: meta
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          PREV=$(git describe --tags --abbrev=0 "HEAD^" 2>/dev/null || echo "")
+          echo "previous-tag=$PREV" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        run: swift test
+
+      - name: Package (ad-hoc signed build artifact)
+        env:
+          RED_FUND_ALLOW_ADHOC: "1"
+        run: npm run package
+
+      - name: List build output
+        if: always()
+        run: ls -lh release/swift/ || echo "release/swift not found"
+
+      - name: Generate release notes preview
+        env:
+          RELEASE_PREVIEW_VERSION: ${{ steps.meta.outputs.version }}
+          RELEASE_PREVIEW_PREVIOUS_TAG: ${{ steps.meta.outputs.previous-tag }}
+        run: |
+          RELEASE_PREVIEW_DATE="$(date +%F)" node scripts/generate-release-notes-preview.mjs
+
+      - name: Upload DMG artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: red-fund-dmg
+          path: release/swift/*.dmg
+          if-no-files-found: warn
+
+      - name: Upload ZIP artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: red-fund-zip
+          path: release/swift/*.zip
+          if-no-files-found: error
+
+      - name: Upload release notes preview
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes-preview
+          path: .release-notes/RELEASE_NOTES_PREVIEW.md
+          if-no-files-found: ignore
+
+      - name: Create GitHub Release with assets
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          # tag 即本次触发的 ref_name（如 v1.1.0）
+          tag_name: ${{ github.ref_name }}
+          name: Red Fund ${{ github.ref_name }}
+          files: |
+            release/swift/*.dmg
+            release/swift/*.zip
+          body_path: .release-notes/RELEASE_NOTES_PREVIEW.md
+          # ad-hoc 未公证产物仅用于自用/验证，预发布标记便于区分
+          prerelease: false
+          fail_on_unmatched_files: false
+
+      - name: Archive release notes
+        if: success()
+        env:
+          RELEASE_PREVIEW_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          RELEASE_PREVIEW_DATE="$(date +%F)" node scripts/archive-release-notes.mjs
+
+      - name: Commit archived release notes
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .release-notes/archive.md .release-notes/changes.md
+          # 仅在 archive/changes 真的发生变动时提交，避免空提交触发额外 CI。
+          if git diff --cached --quiet; then
+            echo "archive.md / changes.md 无变更，跳过提交。"
+          else
+            git commit -m "chore: 归档 v${{ steps.meta.outputs.version }} 发布说明"
+            git push origin HEAD:main
+          fi

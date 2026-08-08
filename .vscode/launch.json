@@ -1,0 +1,24 @@
+{
+	"configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:red-fund}",
+            "name": "Debug RedFund",
+            "target": "RedFund",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug RedFund"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:red-fund}",
+            "name": "Release RedFund",
+            "target": "RedFund",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release RedFund"
+        }
+    ]
+}

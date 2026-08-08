@@ -1,62 +1,49 @@
-# Xcode
-#
-# gitignore contributors: remember to update Global/Xcode.gitignore, Objective-C.gitignore & Swift.gitignore
+# .xcode
+.swiftpm/
 
-## User settings
-xcuserdata/
+# workbuddy
+.workbuddy/
+.codebuddy/
 
-## Obj-C/Swift specific
-*.hmap
+# mermaid
+mermaid*.png
 
-## App packaging
-*.ipa
-*.dSYM.zip
-*.dSYM
+# codex
+.codex/
 
-## Playgrounds
-timeline.xctimeline
-playground.xcworkspace
+# Logs
+logs
+*.log
 
-# Swift Package Manager
-#
-# Add this line if you want to avoid checking in source code from Swift Package Manager dependencies.
-# Packages/
-# Package.pins
-# Package.resolved
-# *.xcodeproj
-#
-# Xcode automatically generates this directory with a .xcworkspacedata file and xcuserdata
-# hence it is not needed unless you have added a package configuration file to your project
-# .swiftpm
+# Runtime data
+pids
+*.pid
+*.seed
 
-.build/
+# Dependency directory
+# https://www.npmjs.org/doc/misc/npm-faq.html#should-i-check-my-node_modules-folder-into-git
+node_modules
 
-# CocoaPods
-#
-# We recommend against adding the Pods directory to your .gitignore. However
-# you should judge for yourself, the pros and cons are mentioned at:
-# https://guides.cocoapods.org/using/using-cocoapods.html#should-i-check-the-pods-directory-into-source-control
-#
-# Pods/
-#
-# Add this line if you want to avoid checking in source code from the Xcode workspace
-# *.xcworkspace
+# OSX
+.DS_Store
 
-# Carthage
-#
-# Add this line if you want to avoid checking in source code from Carthage dependencies.
-# Carthage/Checkouts
+.idea
+npm-debug.log.*
 
-Carthage/Build/
+yarn.lock
+yarn-error.log
+.yarnrc
+# pnpm-lock.yaml
+# package-lock.json
 
-# fastlane
-#
-# It is recommended to not store the screenshots in the git repo.
-# Instead, use fastlane to re-generate the screenshots whenever they are needed.
-# For more information about the recommended setup visit:
-# https://docs.fastlane.tools/best-practices/source-control/#source-control
+# 构建
+.build
+dist
+release/swift
 
-fastlane/report.xml
-fastlane/Preview.html
-fastlane/screenshots/**/*.png
-fastlane/test_output
+# Local design previews and screenshots
+design
+output
+
+# 发布说明预览（脚本生成，放在 .release-notes/ 下）
+.release-notes/RELEASE_NOTES_PREVIEW.md

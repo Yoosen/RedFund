@@ -1,0 +1,58 @@
+name: Test
+
+on:
+  pull_request:
+    branches: [main, dev]
+    paths-ignore:
+      - '**/*.md'
+      - '.release-notes/**'
+      - 'docs/**'
+      - 'screenshots/**'
+      - 'build/**'
+      - 'LICENSE'
+      - 'PRIVACY.md'
+      - 'RELEASE_NOTES_PREVIEW.md'
+      - '**/*.png'
+      - '**/*.jpg'
+      - '**/*.svg'
+      - '**/*.ico'
+  push:
+    branches: [main, dev]
+    paths-ignore:
+      - '**/*.md'
+      - '.release-notes/**'
+      - 'docs/**'
+      - 'screenshots/**'
+      - 'build/**'
+      - 'LICENSE'
+      - 'PRIVACY.md'
+      - 'RELEASE_NOTES_PREVIEW.md'
+      - '**/*.png'
+      - '**/*.jpg'
+      - '**/*.svg'
+      - '**/*.ico'
+
+jobs:
+  swift:
+    runs-on: macos-latest
+
+    steps:
+      - name: Setup repo
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run README tooling tests
+        run: npm run test:readme
+
+      - name: Run release workflow tests
+        run: npm run test:release
+
+      - name: Run Swift tests
+        run: swift test
+
+      - name: Run build
+        run: npm run build
