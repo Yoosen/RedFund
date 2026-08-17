@@ -31,6 +31,7 @@ enum PortfolioPerformanceRecorder {
         guard !activeCodes.isEmpty else { return nil }
 
         let today = DateOnlyFormatter.string(from: now)
+        let prevTradingDay = DateOnlyFormatter.string(from: TradingCalendar.previousTradingDay(from: now))
         var allConfirmed = true
         var freshQuoteCount = 0
         for code in activeCodes {
@@ -38,16 +39,20 @@ enum PortfolioPerformanceRecorder {
             guard let quote = quotes[code] else { return nil }
             let isConfirmed = quote.netValueDate == today
             let isEstimated = quote.estimateTime.hasPrefix(today)
+            // 净值滞后的基金（如 QDII T+1/T+2 披露）：净值日期落后超过一个交易日，
+            // 但在今日被刷新揭示，其涨幅归属刷新当日，视为已确认并参与当日记录。
+            // 已有当日估值的基金按估值处理，不计入滞后确认。
+            let isLaggedConfirmed = !isEstimated && !quote.netValueDate.isEmpty && quote.netValueDate < prevTradingDay
             // 行情滞后的基金（如 QDII 净值 T+1 披露）不参与当日判定，
             // 避免一只基金长期否决整个组合的收益记录。
-            guard isConfirmed || isEstimated else { continue }
+            guard isConfirmed || isEstimated || isLaggedConfirmed else { continue }
             // 海外/QDII 基金在官方净值追平前会产生北京时间开盘前的估算（如 04:00），
             // 这类估算不代表 A 股当日行情，应跳过。
-            if !isConfirmed, isEstimated, isOverseasPreMarketEstimateTime(quote.estimateTime) {
+            if !isConfirmed, !isLaggedConfirmed, isEstimated, isOverseasPreMarketEstimateTime(quote.estimateTime) {
                 continue
             }
             freshQuoteCount += 1
-            allConfirmed = allConfirmed && isConfirmed
+            allConfirmed = allConfirmed && (isConfirmed || isLaggedConfirmed)
         }
         // 全部基金行情都滞后（如非交易日）时不记录。
         guard freshQuoteCount > 0 else { return nil }

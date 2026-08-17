@@ -308,6 +308,13 @@ enum PortfolioCalculator {
         if quote.estimateTime.count >= 10, String(quote.estimateTime.prefix(10)) == today {
             return .intradayEstimate
         }
+        // QDII 等净值滞后的基金：官方净值日期落后超过一个交易日（即并非今日、也非上一交易日），
+        // 但在今日被刷新揭示。将其涨幅归属到刷新当日（而非净值真实日期），
+        // 使当日收益曲线反映这次净值更新。A 股普通基金净值日期一般即为上一交易日，不触发此分支。
+        let prevTradingDay = DateOnlyFormatter.string(from: TradingCalendar.previousTradingDay(from: now))
+        if !quote.netValueDate.isEmpty, quote.netValueDate < prevTradingDay {
+            return .laggedNetValueUpdated
+        }
         return .inactive
     }
 
@@ -320,7 +327,9 @@ enum PortfolioCalculator {
         switch dailyState {
         case .intradayEstimate:
             return confirmedShares * (quote.estimatedNetValue - netValue)
-        case .officialUpdated:
+        case .officialUpdated, .laggedNetValueUpdated:
+            // 滞后净值揭示（如 QDII T+1/T+2）的涨幅归属刷新当日：
+            // 用净值日期涨跌幅反推差额，金额记在刷新当日而非净值真实日期。
             let denominator = 100 + quote.growthRate
             guard denominator != 0 else { return 0 }
             return confirmedShares * netValue * quote.growthRate / denominator
@@ -340,7 +349,7 @@ enum PortfolioCalculator {
         case .intradayEstimate:
             guard netValue > 0 else { return 0 }
             return confirmedShares * netValue
-        case .officialUpdated:
+        case .officialUpdated, .laggedNetValueUpdated:
             let multiplier = 1 + quote.growthRate / 100
             guard multiplier != 0 else { return 0 }
             let previousNetValue = netValue / multiplier
@@ -435,6 +444,7 @@ private enum DailyQuoteState {
     case inactive
     case intradayEstimate
     case officialUpdated
+    case laggedNetValueUpdated
 
     var isActive: Bool {
         self != .inactive

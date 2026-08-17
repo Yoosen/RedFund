@@ -80,6 +80,18 @@ enum TradingCalendar {
         }
     }
 
+    /// 返回给定日期之前最近的一个基金交易日（含跨周末/休市回退）。
+    /// 用于识别「净值日期落后超过一个交易日」的滞后基金（如 QDII T+1/T+2 披露）。
+    static func previousTradingDay(from date: Date = .now) -> Date {
+        let calendar = chinaCalendar
+        var cursor = calendar.date(byAdding: .day, value: -1, to: date) ?? date
+        for _ in 0..<14 {
+            if isFundTradingDay(cursor) { return cursor }
+            cursor = calendar.date(byAdding: .day, value: -1, to: cursor) ?? cursor
+        }
+        return cursor
+    }
+
     /// 返回当前市场时段状态（非交易日直接为休市）。
     static func marketSessionState(now: Date = .now) -> MarketSessionState {
         let calendar = chinaCalendar
@@ -138,7 +150,9 @@ enum TradingCalendar {
 
             guard isFundTradingDay(day) else { continue }
 
-            for minutes in [9 * 60 + 30, 11 * 60 + 30, 13 * 60, 15 * 60] {
+            // 包含 9:15 集合竞价边界：使盘前排期能精确卡到集合竞价开启时刻，
+            // 自动刷新以切换到新交易日的当日估值（无需手动点击状态栏）。
+            for minutes in [callAuctionStartMinutes, 9 * 60 + 30, 11 * 60 + 30, 13 * 60, 15 * 60] {
                 guard let boundary = calendar.date(
                     bySettingHour: minutes / 60,
                     minute: minutes % 60,

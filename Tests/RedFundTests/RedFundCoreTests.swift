@@ -13108,11 +13108,11 @@ final class RedFundCoreTests: XCTestCase {
         )
         XCTAssertEqual(
             TradingCalendar.nextMarketSessionBoundary(after: try chinaDate("2026-06-22 15:01")),
-            try chinaDate("2026-06-23 09:30")
+            try chinaDate("2026-06-23 09:15")
         )
         XCTAssertEqual(
             TradingCalendar.nextMarketSessionBoundary(after: try chinaDate("2026-06-26 15:01")),
-            try chinaDate("2026-06-29 09:30")
+            try chinaDate("2026-06-29 09:15")
         )
     }
 

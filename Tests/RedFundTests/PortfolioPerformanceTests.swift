@@ -190,7 +190,7 @@ final class PortfolioPerformanceTests: XCTestCase {
             true
         )
 
-        // 全部基金行情都滞后（如非交易日）时仍不记录。
+        // 滞后净值（净值日期落后超过一个交易日）在刷新当日被揭示时，其涨幅归属当日并记录。
         let staleDomestic = FundQuote(
             code: "000001",
             name: "测试基金",
@@ -198,14 +198,15 @@ final class PortfolioPerformanceTests: XCTestCase {
             estimatedNetValue: 1.1,
             growthRate: 0.2,
             estimateTime: "2026-07-27 15:00",
-            netValueDate: "2026-07-27"
+            netValueDate: "2026-07-26"
         )
-        XCTAssertNil(
+        XCTAssertEqual(
             PortfolioPerformanceRecorder.quoteConfirmationState(
                 portfolio: snapshot,
                 quotes: ["000001": staleDomestic, "012920": laggingQDIIQuote],
                 now: now
-            )
+            ),
+            true
         )
 
         // 行情整体缺失时仍不记录。
