@@ -15,6 +15,7 @@ struct FundPositionEditorView: View {
     @State private var shares: String
     @State private var cost: String
     @State private var isSameDayNewFund: Bool
+    @State private var buyFee: String
     @State private var positionDate: Date
     @State private var positionTimeType: PositionTimeType
     @State private var memo: String
@@ -83,6 +84,7 @@ struct FundPositionEditorView: View {
         _shares = State(initialValue: fund?.migratedShares.map { Self.text($0, places: 2) } ?? "")
         _cost = State(initialValue: fund?.migratedCost.map { Self.text($0, places: 4) } ?? "")
         _isSameDayNewFund = State(initialValue: false)
+        _buyFee = State(initialValue: "")
         _positionDate = State(initialValue: date)
         _positionTimeType = State(initialValue: fund?.positionTimeType ?? TradingCalendar.defaultPositionTimeType())
         _memo = State(initialValue: fund?.memo ?? "")
@@ -115,30 +117,14 @@ struct FundPositionEditorView: View {
                         latestNetValueRow
                     }
 
-                    PanelSection(title: "持仓录入") {
-                        PanelSegmentedPicker(
-                            values: Array(PositionMode.allCases),
-                            selection: $positionMode,
-                            title: { $0.title }
-                        )
-
-                        if positionMode == .amount {
-                            field("持仓金额") {
-                                PanelTextInput("请输入持仓金额", text: $positionAmount, suffix: "元")
+                    if isTodayNewFund {
+                        PanelSection(title: "买入信息") {
+                            field("买入金额") {
+                                PanelTextInput("请输入买入金额", text: $positionAmount, suffix: "元")
                             }
-                            field("持仓收益") {
-                                PanelTextInput("可为负，默认为 0", text: $positionProfit, suffix: "元")
+                            field("手续费") {
+                                PanelTextInput("可为 0，默认为 0", text: $buyFee, suffix: "元")
                             }
-                        } else {
-                            field("持仓份额") {
-                                PanelTextInput("可精确 2 位小数", text: $shares, suffix: "份")
-                            }
-                            field("持仓成本价") {
-                                PanelTextInput("可精确 4 位小数", text: $cost)
-                            }
-                        }
-
-                        if fund == nil {
                             sameDayNewFundRow
                             if shouldShowTradeTimeControls {
                                 field("交易时点") {
@@ -150,8 +136,46 @@ struct FundPositionEditorView: View {
                                 }
                             }
                         }
+                        .animation(.easeInOut(duration: 0.18), value: shouldShowTradeTimeControls)
+                    } else {
+                        PanelSection(title: "持仓录入") {
+                            PanelSegmentedPicker(
+                                values: Array(PositionMode.allCases),
+                                selection: $positionMode,
+                                title: { $0.title }
+                            )
+
+                            if positionMode == .amount {
+                                field("持仓金额") {
+                                    PanelTextInput("请输入持仓金额", text: $positionAmount, suffix: "元")
+                                }
+                                field("持仓收益") {
+                                    PanelTextInput("可为负，默认为 0", text: $positionProfit, suffix: "元")
+                                }
+                            } else {
+                                field("持仓份额") {
+                                    PanelTextInput("可精确 2 位小数", text: $shares, suffix: "份")
+                                }
+                                field("持仓成本价") {
+                                    PanelTextInput("可精确 4 位小数", text: $cost)
+                                }
+                            }
+
+                            if fund == nil {
+                                sameDayNewFundRow
+                                if shouldShowTradeTimeControls {
+                                    field("交易时点") {
+                                        PanelSegmentedPicker(
+                                            values: Array(PositionTimeType.allCases),
+                                            selection: $positionTimeType,
+                                            title: { $0.title }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        .animation(.easeInOut(duration: 0.18), value: shouldShowTradeTimeControls)
                     }
-                    .animation(.easeInOut(duration: 0.18), value: shouldShowTradeTimeControls)
 
                     if let errorMessage {
                         Text(errorMessage)
@@ -333,13 +357,16 @@ struct FundPositionEditorView: View {
         isTodayNewFund
     }
 
-    /// 校验表单是否可提交：基金代码非空，且金额模式金额 > 0 或份额模式份额与成本均有效。
+    /// 校验表单是否可提交：基金代码非空；当日新买入只需买入金额 > 0；
+    /// 其余情况金额模式金额 > 0 或份额模式份额与成本均有效。
     private var canSubmit: Bool {
-        !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (
-            positionMode == .amount
-                ? (Self.number(positionAmount) ?? 0) > 0
-                : (Self.number(shares) ?? 0) > 0 && (Self.number(cost) ?? 0) > 0
-        )
+        guard !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        if isTodayNewFund {
+            return (Self.number(positionAmount) ?? 0) > 0
+        }
+        return positionMode == .amount
+            ? (Self.number(positionAmount) ?? 0) > 0
+            : (Self.number(shares) ?? 0) > 0 && (Self.number(cost) ?? 0) > 0
     }
 
     /// 表单字段的通用封装：上方标题 + 下方内容视图的纵向布局。
@@ -362,12 +389,19 @@ struct FundPositionEditorView: View {
             ? positionTimeType
             : .before15
 
+        // 当日新买入：按"买入金额 + 手续费"录入，金额模式写入待确认金额，
+        // 手续费作为买入成本扣减（pendingProfit 表达为负）；次日净值就绪后自动换算份额。
+        let draftPositionMode: PositionMode = isTodayNewFund ? .amount : positionMode
+        let draftPositionProfit: Double = isTodayNewFund
+            ? (-(Self.number(buyFee) ?? 0))
+            : (Self.number(positionProfit) ?? 0)
+
         let draft = FundPositionDraft(
             code: code,
             name: name,
-            positionMode: positionMode,
+            positionMode: draftPositionMode,
             positionAmount: Self.number(positionAmount),
-            positionProfit: Self.number(positionProfit) ?? 0,
+            positionProfit: draftPositionProfit,
             shares: Self.number(shares),
             cost: Self.number(cost),
             positionDate: resolvedPositionDate,
