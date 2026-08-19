@@ -784,7 +784,7 @@ final class StatusBarController: NSObject {
             uiState: popoverState,
             selectedFundCode: selectedFundCode,
             onRefresh: { [weak self] in
-                await self?.refreshQuotesAndStatusTitleAsync()
+                await self?.refreshQuotesAndStatusTitleAsync(backfillTypes: true)
             },
             onOpenSettings: { [weak self] in
                 self?.showChildPanel(.settings)
@@ -1105,7 +1105,7 @@ final class StatusBarController: NSObject {
                     self?.handleSettingsChanged()
                 },
                 onRefresh: { [weak self] in
-                    await self?.refreshQuotesAndStatusTitleAsync()
+                    await self?.refreshQuotesAndStatusTitleAsync(backfillTypes: true)
                 },
                 onCheckUpdate: { [weak self] in
                     await self?.onCheckUpdate(.interactive)
@@ -2330,8 +2330,8 @@ final class StatusBarController: NSObject {
     }
 
     // 拉取基金行情（及指数），刷新标题、发送阈值提醒，并通知面板数据已变
-    private func refreshQuotesAndStatusTitleAsync() async {
-        await store.refreshQuotes()
+    private func refreshQuotesAndStatusTitleAsync(backfillTypes: Bool = false) async {
+        await store.refreshQuotes(backfillTypes: backfillTypes)
         await refreshMarketIndexesIfNeeded()
         updateStatusTitle()
         sendFundThresholdRemindersIfNeeded()

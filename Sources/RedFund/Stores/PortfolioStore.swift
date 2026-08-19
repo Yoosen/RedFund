@@ -20,6 +20,8 @@ final class PortfolioStore {
     private var refreshRequestGeneration = 0
     private var quoteRefreshDeferralCount = 0
     private var hasDeferredQuoteRefresh = false
+    /// 本轮行情刷新结束后是否需要批量补抓缺失的基金类型（由手动刷新触发）。
+    private var shouldBackfillTypesAfterNextPass = false
 
     /// 持仓加载状态：加载中 / 已加载 / 缺失明文数据 / 失败。
     enum LoadState: Equatable {
@@ -149,12 +151,13 @@ final class PortfolioStore {
         loadState = .loaded
     }
 
-    func refreshQuotes() async {
+    func refreshQuotes(backfillTypes: Bool = false) async {
         guard quoteRefreshDeferralCount == 0 else {
             hasDeferredQuoteRefresh = true
             return
         }
 
+        shouldBackfillTypesAfterNextPass = shouldBackfillTypesAfterNextPass || backfillTypes
         refreshRequestGeneration &+= 1
         if let refreshTask {
             await refreshTask.value
@@ -180,6 +183,10 @@ final class PortfolioStore {
         repeat {
             processedGeneration = refreshRequestGeneration
             await performRefreshPass()
+            if shouldBackfillTypesAfterNextPass {
+                shouldBackfillTypesAfterNextPass = false
+                await backfillMissingFundTypes()
+            }
         } while processedGeneration != refreshRequestGeneration
     }
 
@@ -308,7 +315,50 @@ final class PortfolioStore {
             )
         }
         try save(snapshot)
+        await resolveFundTypeIfNeeded(for: [existingCode ?? code, code])
         await refreshQuotes()
+    }
+
+    /// 在持仓变更（建仓/加减仓/转换/当日新增）时按需抓取基金类型。
+    /// 仅在对应基金缺失 fundType 时抓取一次官方类型接口，写回 snapshot。
+    /// 行情自动刷新不会调用此方法，避免无谓网络请求；手动刷新流程单独触发。
+    private func resolveFundTypeIfNeeded(for codes: [String]) async {
+        var localSnapshot = snapshot
+        let targets = codes.compactMap { code in
+            localSnapshot.funds.first(where: { $0.code == code })
+        }.filter { $0.fundType == nil }
+        guard !targets.isEmpty else { return }
+
+        for fund in targets {
+            let code = fund.code
+            guard let index = localSnapshot.funds.firstIndex(where: { $0.code == code }) else { continue }
+            guard localSnapshot.funds[index].fundType == nil else { continue }
+            guard let inferred = await quoteService.fetchFundType(code: code) else { continue }
+            localSnapshot.funds[index].fundType = inferred
+        }
+        self.snapshot = localSnapshot
+        try? save(snapshot)
+    }
+
+    /// 手动刷新时（重新）批量抓取所有基金的官方类型。
+    /// 与建仓/加减仓时不同，手动刷新会刷新全部持仓的类型（已存在的也会被更新），
+    /// 失败则保留原值。批次间无并发限制——手动刷新频率低，可忽略请求开销。
+    private func backfillMissingFundTypes() async {
+        let codes = snapshot.funds.map(\.code)
+        guard !codes.isEmpty else { return }
+        await resolveFundTypeForAll(codes)
+    }
+
+    /// 对所有给定基金抓取官方类型并写入 snapshot（已存在则覆盖）。
+    private func resolveFundTypeForAll(_ codes: [String]) async {
+        var localSnapshot = snapshot
+        for code in codes {
+            guard let index = localSnapshot.funds.firstIndex(where: { $0.code == code }) else { continue }
+            guard let inferred = await quoteService.fetchFundType(code: code) else { continue }
+            localSnapshot.funds[index].fundType = inferred
+        }
+        self.snapshot = localSnapshot
+        try? save(snapshot)
     }
 
     func lookupFundName(code: String) async -> String? {
@@ -449,6 +499,7 @@ final class PortfolioStore {
         )
         appendPendingTrade(draft, fund: snapshot.funds[index], acceptedDate: acceptedDate, syncMetadata: syncMetadata)
         try save(snapshot)
+        await resolveFundTypeIfNeeded(for: [code])
         await refreshQuotes()
     }
 
@@ -501,6 +552,7 @@ final class PortfolioStore {
             syncMetadata: syncMetadata
         )
         try save(snapshot)
+        await resolveFundTypeIfNeeded(for: [normalizedDraft.fromCode, normalizedDraft.toCode])
         await refreshQuotes()
     }
 

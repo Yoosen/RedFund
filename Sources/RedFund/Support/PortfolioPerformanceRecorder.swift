@@ -35,8 +35,9 @@ enum PortfolioPerformanceRecorder {
         var allConfirmed = true
         var freshQuoteCount = 0
         for code in activeCodes {
-            // 行情整体缺失时不记录，避免把不完整的组合收益写入日历。
-            guard let quote = quotes[code] else { return nil }
+            // 单只基金行情缺失时跳过它（其对当日收益的贡献本就是 0），
+            // 与实时收益口径保持一致；仅当所有活跃基金都缺失时才不记录。
+            guard let quote = quotes[code] else { continue }
             let isConfirmed = quote.netValueDate == today
             let isEstimated = quote.estimateTime.hasPrefix(today)
             // 净值滞后的基金（如 QDII T+1/T+2 披露）：净值日期落后超过一个交易日，
@@ -199,10 +200,22 @@ enum PortfolioPerformanceRecorder {
     }
 
     /// 判断候选记录是否应覆盖已有记录：京东已确认记录优先于本地估值；已确认优先于估值；同状态则按更新时间较新者覆盖。
+    /// 例外：当前交易日的本地实时计算始终优先，确保收益日历当天与实时收益一致。
     private static func shouldReplace(
         existing: PortfolioPerformanceDay,
         with candidate: PortfolioPerformanceDay
     ) -> Bool {
+        if candidate.source == .localQuote,
+           candidate.date == DateOnlyFormatter.string(from: .now) {
+            // 当前交易日本地实时计算优先覆盖任何已有来源，
+            // 但金额/收益率/状态完全一致时避免无意义重写。
+            if existing.status == candidate.status,
+               existing.profit == candidate.profit,
+               existing.returnRate == candidate.returnRate {
+                return false
+            }
+            return true
+        }
         if existing.source == .jdFinance,
            existing.status == .confirmed,
            candidate.source == .localQuote {

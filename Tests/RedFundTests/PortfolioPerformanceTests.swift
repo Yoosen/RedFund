@@ -95,12 +95,14 @@ final class PortfolioPerformanceTests: XCTestCase {
             ),
             false
         )
-        XCTAssertNil(
+        // 单只基金行情缺失时跳过它（其当日收益贡献为 0），当天的记录仍按现有行情进行。
+        XCTAssertEqual(
             PortfolioPerformanceRecorder.quoteConfirmationState(
                 portfolio: snapshot,
                 quotes: ["000001": official],
                 now: now
-            )
+            ),
+            true
         )
 
         var confirmedSecond = estimate
@@ -209,11 +211,11 @@ final class PortfolioPerformanceTests: XCTestCase {
             true
         )
 
-        // 行情整体缺失时仍不记录。
+        // 所有活跃基金行情都缺失时（非交易日或接口全失败）才不记录。
         XCTAssertNil(
             PortfolioPerformanceRecorder.quoteConfirmationState(
                 portfolio: snapshot,
-                quotes: ["000001": domesticEstimate],
+                quotes: ["999999": domesticEstimate],
                 now: now
             )
         )

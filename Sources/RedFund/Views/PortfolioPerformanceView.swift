@@ -825,11 +825,11 @@ private struct PortfolioCumulativeProfitChart: View {
 
 #if canImport(AppKit)
 /// 透明覆盖层，用于跟踪鼠标在视图中的位置。
-private struct MouseTrackingOverlay: NSViewRepresentable {
+struct MouseTrackingOverlay: NSViewRepresentable {
     @Binding var location: CGPoint?
 
     func makeNSView(context: Context) -> NSView {
-        let view = TrackingView()
+        let view = MouseTrackingView()
         view.onMouseMoved = { location in
             self.location = location
         }
@@ -838,7 +838,7 @@ private struct MouseTrackingOverlay: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {}
 
-    private final class TrackingView: NSView {
+    final class MouseTrackingView: NSView {
         var onMouseMoved: ((CGPoint?) -> Void)?
 
         override func updateTrackingAreas() {

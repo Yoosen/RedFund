@@ -152,6 +152,79 @@ struct FundPosition: Codable, Identifiable, Equatable {
     var intradayRateDate: String? = nil
     /// 盘中收益率历史采样点。
     var intradayRateHistory: [FundIntradayRatePoint]? = nil
+    /// 基金类型（按官方类型字段 FTYPE 映射），用于组合层面的资产分布分组。
+    /// 在建仓/加减仓/转换/当日新增以及手动刷新时抓取一次，行情刷新不会更新。
+    var fundType: FundType? = nil
+}
+
+/// 基金类型（按官方类型字段 FTYPE 映射，用于组合层面的资产分布分组）。
+enum FundType: String, Codable, CaseIterable, Identifiable, Equatable {
+    case stock      // 股票型
+    case bond       // 债券型
+    case hybrid     // 混合型
+    case qdii       // QDII
+    case index      // 指数型
+    case money      // 货币型
+    case other      // 其他
+
+    /// 用作 Identifiable 的稳定标识。
+    var id: String { rawValue }
+
+    /// 类型中文标题。
+    var title: String {
+        switch self {
+        case .stock:  "股票型"
+        case .bond:   "债券型"
+        case .hybrid: "混合型"
+        case .qdii:   "QDII"
+        case .index:  "指数型"
+        case .money:  "货币型"
+        case .other:  "其他"
+        }
+    }
+
+    /// 分组展示顺序（按常见组合占比排序）。
+    var displayOrder: Int {
+        switch self {
+        case .stock: 0
+        case .index: 1
+        case .hybrid: 2
+        case .qdii: 3
+        case .bond: 4
+        case .money: 5
+        case .other: 6
+        }
+    }
+
+    /// 按官方 FTYPE 中文描述映射到本地类型。
+    /// 例如 "混合型-灵活" → .hybrid，"债券型-长债" → .bond。
+    /// 若 QDII 名称已确认，优先按名称判定。
+    static func from(ftype: String?, isQDII: Bool = false) -> FundType {
+        if isQDII { return .qdii }
+        guard let ftype = ftype?.trimmingCharacters(in: .whitespaces), !ftype.isEmpty else {
+            return .other
+        }
+        let lowercased = ftype.lowercased()
+        if lowercased.contains("指数") || lowercased.contains("etf") {
+            return .index
+        }
+        if lowercased.contains("qdii") {
+            return .qdii
+        }
+        if lowercased.contains("股票") || lowercased.contains("股票型") || lowercased.contains("偏股") {
+            return .stock
+        }
+        if lowercased.contains("债券") || lowercased.contains("纯债") || lowercased.contains("短债") || lowercased.contains("长债") {
+            return .bond
+        }
+        if lowercased.contains("货币") {
+            return .money
+        }
+        if lowercased.contains("混合") || lowercased.contains("灵活") {
+            return .hybrid
+        }
+        return .other
+    }
 }
 
 /// 持仓批次：单笔建仓的份额、成本与日期。

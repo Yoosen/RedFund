@@ -298,6 +298,36 @@ struct FundQuoteService {
         return nil
     }
 
+    /// 获取基金官方类型（天天基金 FundMNNBasicInformation 接口返回 FTYPE）。
+    func fetchFundType(code: String) async -> FundType? {
+        var components = URLComponents(string: "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNNBasicInformation")!
+        components.queryItems = [
+            URLQueryItem(name: "FCODE", value: code),
+            URLQueryItem(name: "deviceid", value: "app"),
+            URLQueryItem(name: "version", value: "6.3.5"),
+            URLQueryItem(name: "plat", value: "Iphone"),
+            URLQueryItem(name: "appType", value: "ttjj"),
+            URLQueryItem(name: "product", value: "EFund")
+        ]
+        guard let url = components.url else { return nil }
+
+        var request = URLRequest(url: url)
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+            forHTTPHeaderField: "User-Agent"
+        )
+
+        do {
+            let (data, _) = try await session.data(for: request)
+            let decoded = try JSONDecoder().decode(FundBasicInfoResponse.self, from: data)
+            guard let info = decoded.datas else { return nil }
+            let isQDII = Self.qdiiBaseSearchName(for: info.shortName ?? "") != nil
+            return FundType.from(ftype: info.ftype, isQDII: isQDII)
+        } catch {
+            return nil
+        }
+    }
+
     /// 获取基金详情补充数据：净值走势、重仓股、相关行业、行业/资产配置。
     func fetchFundDetailSupplement(code: String, now: Date = .now) async -> FundDetailSupplement {
         async let history = fetchNetValueHistorySafely(code: code)
@@ -775,7 +805,8 @@ struct FundQuoteService {
     }
 
     /// 提取 QDII 基金的基础名（去除末尾 "(QDII)A" 后缀）。
-    private static func qdiiBaseSearchName(for value: String) -> String? {
+    /// 若名称以 `(QDII)X` 形式结尾，返回去除 QDII 后缀的基础名，否则 nil。
+    static func qdiiBaseSearchName(for value: String) -> String? {
         let pattern = #"(?i)\s*[\(（]\s*QDII\s*[\)）]\s*[A-Z]\s*$"#
         guard let range = value.range(of: pattern, options: .regularExpression) else {
             return nil
@@ -1381,6 +1412,26 @@ private struct FundSearchItem: Decodable {
         case shortName = "SHORTNAME"
         case categoryDescription = "CATEGORYDESC"
     }
+}
+
+/// 天天基金基金基本信息接口响应（Datas 为单条字典而非数组）。
+private struct FundBasicInfoResponse: Decodable {
+var datas: FundBasicInfoItem?
+
+private enum CodingKeys: String, CodingKey {
+    case datas = "Datas"
+}
+}
+
+/// 天天基金基金基本信息单条（字段对应 FTYPE/SHORTNAME 等）。
+private struct FundBasicInfoItem: Decodable {
+var ftype: String?
+var shortName: String?
+
+private enum CodingKeys: String, CodingKey {
+    case ftype = "FTYPE"
+    case shortName = "SHORTNAME"
+}
 }
 
 /// 宽松字符串解析（兼容 null/字符串/数字）。

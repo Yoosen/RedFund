@@ -891,7 +891,8 @@ struct PopoverContentView: View {
         .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.34 : 0.16), radius: 14, x: 0, y: 8)
     }
 
-    /// 中部列表区：筛选为“待确认”时显示待确认交易列表，否则显示基金列表（支持下拉刷新）。
+    /// 中部列表区：筛选为“待确认”时显示待确认交易列表，否则显示基金列表。
+    /// 手动刷新走工具栏刷新按钮（而非下拉刷新，Mac 菜单栏不采用下拉刷新交互）。
     private var fundList: some View {
         ScrollView {
             if filter == .pending {
@@ -911,9 +912,6 @@ struct PopoverContentView: View {
             }
         }
         .scrollIndicators(.visible)
-        .refreshable {
-            await refreshWithFeedback()
-        }
         .frame(maxHeight: .infinity, alignment: .top)
         .background(listSurfaceBackground)
     }
@@ -2280,7 +2278,8 @@ struct PopoverContentView: View {
     }
 
     @MainActor
-    /// 下拉刷新触发的异步刷新：调用注入的 onRefresh，并短暂显示手动刷新反馈动画。
+    /// 工具栏刷新按钮触发的异步刷新：调用注入的 onRefresh（手动刷新，会补抓基金类型），
+    /// 并短暂显示手动刷新反馈动画。
     private func refreshWithFeedback() async {
         guard !isRefreshRequestInProgress else { return }
 
@@ -2300,7 +2299,7 @@ struct PopoverContentView: View {
         if let onRefresh {
             await onRefresh()
         } else {
-            await store.refreshQuotes()
+            await store.refreshQuotes(backfillTypes: true)
         }
     }
 }
@@ -3421,6 +3420,8 @@ struct PortfolioAllocationPanelView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         allocationSummary
                         allocationChartSection
+                        categoryDistributionSection
+                            .zIndex(1)
                         allocationBreakdownList
                     }
                     .padding(.horizontal, 14)
@@ -3494,6 +3495,298 @@ struct PortfolioAllocationPanelView: View {
         .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(PanelDesign.border(cornerRadius: 10))
     }
+
+    /// 按基金类型分组的资产分布（股票型/QDII/债券型/货币型/...）。
+    /// 仅在有基金已抓取 fundType 时展示。
+    private var categoryDistributionItems: [(type: FundType, amount: Double, share: Double)] {
+        let funds = PortfolioPanelDisplay.holdingFunds(in: store.snapshot)
+        guard funds.contains(where: { $0.fundType != nil }) else { return [] }
+
+        var byType: [FundType: Double] = [:]
+        for fund in funds {
+            let type = fund.fundType ?? .other
+            byType[type, default: 0] += PortfolioPanelDisplay.currentAmount(for: fund)
+        }
+        let total = byType.values.reduce(0, +)
+        guard total > 0 else { return [] }
+
+        return byType.map { type, amount in
+            (type: type, amount: amount, share: amount / total)
+        }
+        .sorted { $0.share > $1.share }
+    }
+
+    private var categoryDistributionSection: some View {
+        CategoryDistributionSectionView(
+            items: categoryDistributionItems,
+            colorFor: { id in
+                FundType(rawValue: id).map { categoryColor($0) } ?? Color(nsColor: .systemGray)
+            },
+            amountText: { MoneyFormatter.plainMoney($0) },
+            percentText: { MoneyFormatter.percent($0 * 100) },
+            headerTitle: "资产分布"
+        )
+        .padding(12)
+        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 10))
+    }
+
+    /// 资产分布区块。持有悬停状态，气泡绘制在整个卡片顶层 overlay，避免被图例或后续卡片遮挡/裁剪。
+    private struct CategoryDistributionSectionView: View {
+        let items: [(type: FundType, amount: Double, share: Double)]
+        let colorFor: (String) -> Color
+        let amountText: (Double) -> String
+        let percentText: (Double) -> String
+        let headerTitle: String
+
+        @State private var hoverLocation: CGPoint?
+        @State private var hoverId: String?
+        @State private var donutFrame: CGRect = .zero
+        @Environment(\.colorScheme) private var colorScheme
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 8) {
+                Self.sectionTitle(headerTitle)
+                if items.isEmpty {
+                    Text("建仓或加仓后将自动识别基金类型")
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                } else {
+                    HStack(alignment: .center, spacing: 16) {
+                        CategoryDonutView(
+                            items: items.map {
+                                CategoryDonutView.Item(
+                                    id: $0.type.id,
+                                    title: $0.type.title,
+                                    amount: $0.amount,
+                                    share: $0.share
+                                )
+                            },
+                            colorFor: colorFor,
+                            amountText: amountText,
+                            percentText: percentText,
+                            hoverLocation: $hoverLocation,
+                            hoverId: $hoverId
+                        )
+                        .frame(width: 112, height: 112)
+                        .overlay(
+                            GeometryReader { proxy in
+                                Color.clear.preference(
+                                    key: DonutFrameKey.self,
+                                    value: proxy.frame(in: .named("categorySection"))
+                                )
+                            }
+                        )
+
+                        VStack(alignment: .leading, spacing: 5) {
+                            ForEach(items, id: \.type.id) { item in
+                                HStack(spacing: 6) {
+                                    Self.categorySwatch(item.type)
+                                    Text(item.type.title)
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    Text(amountText(item.amount))
+                                        .font(.system(size: 10, weight: .regular))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .layoutPriority(1)
+                                    Spacer(minLength: 4)
+                                    Text(percentText(item.share))
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundStyle(Self.categoryColor(item.type))
+                                        .lineLimit(1)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .coordinateSpace(name: "categorySection")
+            .overlay(alignment: .topLeading) {
+                bubbleOverlay
+            }
+        }
+
+        @ViewBuilder
+        private var bubbleOverlay: some View {
+            if let hoverId,
+               let item = items.first(where: { $0.type.id == hoverId }) {
+                let pt = hoverLocation ?? .zero
+                let originX = donutFrame.minX + pt.x + 14
+                let originY = donutFrame.minY + pt.y + 14
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(colorFor(item.type.id))
+                            .frame(width: 8, height: 8)
+                        Text(item.type.title)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.primary)
+                    }
+                    HStack(spacing: 6) {
+                        Text(percentText(item.share))
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .foregroundStyle(colorFor(item.type.id))
+                        Text(amountText(item.amount))
+                            .font(.system(size: 10, weight: .regular))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(8)
+                .frame(width: 136)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(colorScheme == .dark
+                              ? Color(white: 0.16)
+                              : Color(white: 1.0))
+                )
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.7), lineWidth: 1))
+                .shadow(color: Color.black.opacity(0.35), radius: 10, x: 0, y: 5)
+                .position(x: originX + 68, y: originY + 28)
+            }
+        }
+
+        private static func sectionTitle(_ title: String) -> some View {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.primary)
+        }
+
+        private static func categorySwatch(_ type: FundType) -> some View {
+            Circle()
+                .fill(categoryColor(type))
+                .frame(width: 9, height: 9)
+        }
+
+        private static func categoryColor(_ type: FundType) -> Color {
+            switch type {
+            case .stock:  Color(red: 201 / 255, green: 42 / 255, blue: 42 / 255)
+            case .index:  Color(red: 222 / 255, green: 111 / 255, blue: 38 / 255)
+            case .hybrid: Color(red: 168 / 255, green: 120 / 255, blue: 224 / 255)
+            case .qdii:   Color(red: 38 / 255, green: 122 / 255, blue: 224 / 255)
+            case .bond:   Color(red: 4 / 255, green: 120 / 255, blue: 87 / 255)
+            case .money:  Color(red: 96 / 255, green: 165 / 255, blue: 250 / 255)
+            case .other:  Color(nsColor: .systemGray)
+            }
+        }
+    }
+
+    private struct DonutFrameKey: PreferenceKey {
+        static var defaultValue: CGRect { .zero }
+        static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+            value = nextValue()
+        }
+    }
+
+    private func categoryColor(_ type: FundType) -> Color {
+        switch type {
+        case .stock:  Color(red: 201 / 255, green: 42 / 255, blue: 42 / 255)
+        case .index:  Color(red: 222 / 255, green: 111 / 255, blue: 38 / 255)
+        case .hybrid: Color(red: 168 / 255, green: 120 / 255, blue: 224 / 255)
+        case .qdii:   Color(red: 38 / 255, green: 122 / 255, blue: 224 / 255)
+        case .bond:   Color(red: 4 / 255, green: 120 / 255, blue: 87 / 255)
+        case .money:  Color(red: 96 / 255, green: 165 / 255, blue: 250 / 255)
+        case .other:  Color(nsColor: .systemGray)
+        }
+    }
+
+/// 资产分布甜甜圈图：支持鼠标悬停高亮对应扇区并弹出类型/占比/金额提示。
+private struct CategoryDonutView: View {
+    struct Item: Identifiable {
+        let id: String
+        let title: String
+        let amount: Double
+        let share: Double
+    }
+
+    let items: [Item]
+    let colorFor: (String) -> Color
+    let amountText: (Double) -> String
+    let percentText: (Double) -> String
+
+    @Binding var hoverLocation: CGPoint?
+    @Binding var hoverId: String?
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        GeometryReader { geometry in
+            let diameter = min(geometry.size.width, geometry.size.height)
+            let lineWidth: CGFloat = max(diameter * 0.20, 16)
+            let radius = (diameter - lineWidth) / 2
+            let center = CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
+
+            ZStack {
+                Canvas { context, _ in
+                    var startAngle = Angle.degrees(-90)
+                    for item in items {
+                        let sweep = Angle.degrees(360 * item.share)
+                        let endAngle = startAngle + sweep
+                        let isHovered = item.id == hoverId
+                        let path = Path { path in
+                            path.addArc(
+                                center: center,
+                                radius: radius,
+                                startAngle: startAngle,
+                                endAngle: endAngle,
+                                clockwise: false
+                            )
+                        }
+                        var color = colorFor(item.id)
+                        if hoverId != nil && !isHovered {
+                            color = color.opacity(0.35)
+                        } else if isHovered {
+                            color = color
+                        }
+                        context.stroke(path, with: .color(color), lineWidth: lineWidth)
+                        startAngle = endAngle
+                    }
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .contentShape(Rectangle())
+            .onContinuousHover(coordinateSpace: .local) { phase in
+                switch phase {
+                case .active(let location):
+                    hoverLocation = location
+                    hoverId = hitTest(location: location, size: geometry.size, center: center, radius: radius)
+                case .ended:
+                    hoverLocation = nil
+                    hoverId = nil
+                }
+            }
+        }
+    }
+
+    /// 根据鼠标位置判断命中哪个扇区（环内 + 角度区间）。
+    /// location 为 SwiftUI 本地坐标（y 向下），onContinuousHover 直接提供，无需翻转。
+    private func hitTest(location: CGPoint?, size: CGSize, center: CGPoint, radius: CGFloat) -> String? {
+        guard let location, size.width > 0 else { return nil }
+        let dx = location.x - center.x
+        let dy = location.y - center.y
+        let distance = sqrt(dx * dx + dy * dy)
+        // 仅命中环带区域（线宽的一半范围内），并处于中心圆之外。
+        guard distance >= radius - 6, distance <= radius + 20 else { return nil }
+        var angle = atan2(dy, dx) * 180 / .pi
+        angle = (angle + 90).truncatingRemainder(dividingBy: 360)
+        if angle < 0 { angle += 360 }
+
+        var start = 0.0
+        for item in items {
+            let end = start + item.share * 360
+            if angle >= start, angle < end {
+                return item.id
+            }
+            start = end
+        }
+        return nil
+    }
+}
 
     private var allocationBreakdownList: some View {
         VStack(alignment: .leading, spacing: 8) {
