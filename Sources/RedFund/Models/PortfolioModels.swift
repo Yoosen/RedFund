@@ -152,6 +152,8 @@ struct FundPosition: Codable, Identifiable, Equatable {
     var intradayRateDate: String? = nil
     /// 盘中收益率历史采样点。
     var intradayRateHistory: [FundIntradayRatePoint]? = nil
+    /// 估值误差历史（当日净值更新后配对写入，保留近 30 天），用于估值准确率统计。
+    var estimationDeviationHistory: [EstimationDeviation]? = nil
     /// 基金类型（按官方类型字段 FTYPE 映射），用于组合层面的资产分布分组。
     /// 在建仓/加减仓/转换/当日新增以及手动刷新时抓取一次，行情刷新不会更新。
     var fundType: FundType? = nil
@@ -244,6 +246,58 @@ struct FundIntradayRatePoint: Codable, Identifiable, Equatable {
     var timestamp: Int64
     var rate: Double
     var estimateTime: String
+}
+
+/// 当日估值误差记录：当日净值公布后，把「当日最后一次盘中估值」与「当日实际涨跌幅」配对，
+/// 用于统计估值准确率分布（近 30 天）。
+struct EstimationDeviation: Codable, Identifiable, Equatable {
+    var id: String { date }
+    /// 对应的交易日（yyyy-MM-dd，即收盘确认的那一天）。
+    var date: String
+    /// 当日最后一次盘中估值涨跌幅（百分比数值，如 +1.23 表示 +1.23%）。
+    var estimatedRate: Double
+    /// 当日实际涨跌幅（百分比数值）。
+    var actualRate: Double
+    /// 估值与实际涨跌幅的绝对偏差（百分点），=|实际-估值|。例如实际 -0.72%、预估 -1.10%，值为 0.38。
+    var absoluteDeviation: Double
+
+    private enum CodingKeys: String, CodingKey {
+        case date
+        case estimatedRate
+        case actualRate
+        case absoluteDeviation
+        /// 旧版字段名（早期按「相对误差」口径写入），解码兼容用。
+        case legacyRelativeError = "relativeError"
+    }
+
+    init(date: String, estimatedRate: Double, actualRate: Double, absoluteDeviation: Double) {
+        self.date = date
+        self.estimatedRate = estimatedRate
+        self.actualRate = actualRate
+        self.absoluteDeviation = absoluteDeviation
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        date = try container.decode(String.self, forKey: .date)
+        estimatedRate = try container.decode(Double.self, forKey: .estimatedRate)
+        actualRate = try container.decode(Double.self, forKey: .actualRate)
+        if let absolute = try container.decodeIfPresent(Double.self, forKey: .absoluteDeviation) {
+            absoluteDeviation = absolute
+        } else if let legacy = try container.decodeIfPresent(Double.self, forKey: .legacyRelativeError) {
+            absoluteDeviation = legacy
+        } else {
+            absoluteDeviation = 0
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(date, forKey: .date)
+        try container.encode(estimatedRate, forKey: .estimatedRate)
+        try container.encode(actualRate, forKey: .actualRate)
+        try container.encode(absoluteDeviation, forKey: .absoluteDeviation)
+    }
 }
 
 /// 交易种类（新增基金/加仓/减仓/转换转出/转入）。

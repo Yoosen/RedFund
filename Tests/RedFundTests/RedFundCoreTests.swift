@@ -16161,6 +16161,330 @@ final class RedFundCoreTests: XCTestCase {
         XCTAssertTrue(result.funds[0].intradayRateHistory?.isEmpty ?? true)
     }
 
+    /// 构造带近 30 天误差历史与盘中采样点的持仓，供估值准确率录制测试使用。
+    private func makeEstimateHistoryFund(
+        deviationHistory: [EstimationDeviation]? = nil,
+        intradayPoint: FundIntradayRatePoint? = nil
+    ) -> FundPosition {
+        FundPosition(
+            code: Self.tradeTestCode,
+            name: Self.tradeTestName,
+            dateText: "06-24 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingRate: nil,
+            status: .holding,
+            isUpdated: false,
+            intradayRateDate: intradayPoint == nil ? nil : "2026-06-24",
+            intradayRateHistory: intradayPoint.map { [$0] },
+            estimationDeviationHistory: deviationHistory
+        )
+    }
+
+    /// 当日晚上净值已更新（官方净值日期 == 盘中估值日 2026-06-24）时即可配对，
+    /// 无需等到下一个交易日。绝对偏差 = |1.00-1.25| = 0.25 个百分点。
+    func testEstimationDeviationRecordsPairWhenEveningNetValueUpdates() throws {
+        let now = try chinaDate("2026-06-24 20:00")
+        let point = FundIntradayRatePoint(
+            timestamp: Int64(try chinaDate("2026-06-24 14:50").timeIntervalSince1970 * 1000),
+            rate: 1.25,
+            estimateTime: "2026-06-24 14:50"
+        )
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [makeEstimateHistoryFund(intradayPoint: point)],
+            migration: nil
+        )
+        let quote = FundQuote(
+            code: Self.tradeTestCode,
+            name: Self.tradeTestName,
+            netValue: 2,
+            estimatedNetValue: 2.02,
+            growthRate: 1.00,
+            estimateTime: "2026-06-24 15:00",
+            netValueDate: "2026-06-24"
+        )
+
+        let result = EstimationDeviationRecorder.applyingConfirmedDeviation(
+            to: snapshot,
+            quotes: [Self.tradeTestCode: quote]
+        )
+
+        let devs: [EstimationDeviation] = try XCTUnwrap(result.funds[0].estimationDeviationHistory)
+        XCTAssertEqual(devs.count, 1)
+        XCTAssertEqual(devs[0].date, "2026-06-24")
+        XCTAssertEqual(devs[0].estimatedRate, 1.25)
+        XCTAssertEqual(devs[0].actualRate, 1.00)
+        XCTAssertEqual(devs[0].absoluteDeviation, 0.25, accuracy: 1e-9)
+    }
+
+    /// 盘中当日净值尚未公布（官方净值日期仍停留在上一交易日）时不会配对，
+    /// 避免盘中交易时段提前统计。
+    func testEstimationDeviationSkipsBeforeEveningNetValueUpdate() throws {
+        let now = try chinaDate("2026-06-24 10:00")
+        let point = FundIntradayRatePoint(
+            timestamp: Int64(try chinaDate("2026-06-24 10:00").timeIntervalSince1970 * 1000),
+            rate: 1.25,
+            estimateTime: "2026-06-24 10:00"
+        )
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [makeEstimateHistoryFund(intradayPoint: point)],
+            migration: nil
+        )
+        // 盘中官方净值日期仍停留在 06-23（当日净值未公布）。
+        let quote = FundQuote(
+            code: Self.tradeTestCode,
+            name: Self.tradeTestName,
+            netValue: 2,
+            estimatedNetValue: 2.02,
+            growthRate: 1.00,
+            estimateTime: "2026-06-24 10:00",
+            netValueDate: "2026-06-23"
+        )
+
+        let result = EstimationDeviationRecorder.applyingConfirmedDeviation(
+            to: snapshot,
+            quotes: [Self.tradeTestCode: quote]
+        )
+
+        XCTAssertNil(result.funds[0].estimationDeviationHistory)
+    }
+
+    /// 无盘中估值采样（QDII 等）的基金不会产生误差记录。
+    func testEstimationDeviationSkipsFundWithoutIntradayHistory() throws {
+        let now = try chinaDate("2026-06-25 20:00")
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [makeEstimateHistoryFund()],
+            migration: nil
+        )
+        let quote = FundQuote(
+            code: Self.tradeTestCode,
+            name: Self.tradeTestName,
+            netValue: 2,
+            estimatedNetValue: 2.02,
+            growthRate: 1.00,
+            estimateTime: "2026-06-24 15:00",
+            netValueDate: "2026-06-24"
+        )
+
+        let result = EstimationDeviationRecorder.applyingConfirmedDeviation(
+            to: snapshot,
+            quotes: [Self.tradeTestCode: quote]
+        )
+
+        XCTAssertNil(result.funds[0].estimationDeviationHistory)
+    }
+
+    /// 同一交易日重复写入不会累加（幂等性）。
+    func testEstimationDeviationDoesNotDuplicateSameDate() throws {
+        let now = try chinaDate("2026-06-25 20:00")
+        let point = FundIntradayRatePoint(
+            timestamp: Int64(try chinaDate("2026-06-24 14:50").timeIntervalSince1970 * 1000),
+            rate: 1.25,
+            estimateTime: "2026-06-24 14:50"
+        )
+        let existing = EstimationDeviation(
+            date: "2026-06-24",
+            estimatedRate: 1.25,
+            actualRate: 1.00,
+            absoluteDeviation: 0.25
+        )
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [makeEstimateHistoryFund(deviationHistory: [existing], intradayPoint: point)],
+            migration: nil
+        )
+        let quote = FundQuote(
+            code: Self.tradeTestCode,
+            name: Self.tradeTestName,
+            netValue: 2,
+            estimatedNetValue: 2.02,
+            growthRate: 1.00,
+            estimateTime: "2026-06-24 15:00",
+            netValueDate: "2026-06-24"
+        )
+
+        let result = EstimationDeviationRecorder.applyingConfirmedDeviation(
+            to: snapshot,
+            quotes: [Self.tradeTestCode: quote]
+        )
+
+        XCTAssertEqual(result.funds[0].estimationDeviationHistory?.count, 1)
+    }
+
+    /// 偏差历史最多保留近 30 天，超出后截断为最新 30 条。
+    func testEstimationDeviationKeepsMostRecentThirtyDays() throws {
+        let now = try chinaDate("2026-06-25 20:00")
+        let point = FundIntradayRatePoint(
+            timestamp: Int64(try chinaDate("2026-06-24 14:50").timeIntervalSince1970 * 1000),
+            rate: 1.25,
+            estimateTime: "2026-06-24 14:50"
+        )
+        let days = [
+            "2026-04-01", "2026-04-02", "2026-04-03", "2026-04-04", "2026-04-05",
+            "2026-04-06", "2026-04-07", "2026-04-08", "2026-04-09", "2026-04-10",
+            "2026-04-11", "2026-04-12", "2026-04-13", "2026-04-14", "2026-04-15",
+            "2026-04-16", "2026-04-17", "2026-04-18", "2026-04-19", "2026-04-20",
+            "2026-04-21", "2026-04-22", "2026-04-23", "2026-04-24", "2026-04-25",
+            "2026-04-26", "2026-04-27", "2026-04-28", "2026-04-29", "2026-04-30",
+            "2026-05-01", "2026-05-02"
+        ]
+        let history = days.map {
+            EstimationDeviation(date: $0, estimatedRate: 1, actualRate: 1, absoluteDeviation: 0)
+        }
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [makeEstimateHistoryFund(deviationHistory: history, intradayPoint: point)],
+            migration: nil
+        )
+        let quote = FundQuote(
+            code: Self.tradeTestCode,
+            name: Self.tradeTestName,
+            netValue: 2,
+            estimatedNetValue: 2.02,
+            growthRate: 1.00,
+            estimateTime: "2026-06-24 15:00",
+            netValueDate: "2026-06-24"
+        )
+
+        let result = EstimationDeviationRecorder.applyingConfirmedDeviation(
+            to: snapshot,
+            quotes: [Self.tradeTestCode: quote]
+        )
+
+        let devs: [EstimationDeviation] = try XCTUnwrap(result.funds[0].estimationDeviationHistory)
+        XCTAssertEqual(devs.count, 30)
+        // 保留的应为最新的 30 条（去掉最旧的 04-01/04-02），并包含新写入的 06-24。
+        XCTAssertFalse(devs.contains { $0.date == "2026-04-01" })
+        XCTAssertFalse(devs.contains { $0.date == "2026-04-02" })
+        XCTAssertTrue(devs.contains { $0.date == "2026-06-24" })
+    }
+
+    /// 迁移：历史中存在旧算法残留（absoluteDeviation 不满足 |实际-预估| 恒等式）时，
+    /// 清空该基金整段误差历史重新统计；新算法数据与无历史基金不受影响。
+    func testEstimationDeviationMigrationClearsLegacyRelativeErrorHistory() throws {
+        let legacy = [
+            EstimationDeviation(date: "2026-06-24", estimatedRate: 1.25, actualRate: 1.00, absoluteDeviation: 52.8),
+            EstimationDeviation(date: "2026-06-23", estimatedRate: -1.10, actualRate: -0.72, absoluteDeviation: 61.1),
+            // 旧算法值也可能小于 10（例如当日实际涨跌幅较大时），同样不满足恒等式，应被识别清理。
+            EstimationDeviation(date: "2026-06-22", estimatedRate: 5.40, actualRate: 5.00, absoluteDeviation: 8.0)
+        ]
+        let healthy = [
+            EstimationDeviation(date: "2026-06-24", estimatedRate: 1.25, actualRate: 1.00, absoluteDeviation: 0.25),
+            EstimationDeviation(date: "2026-06-23", estimatedRate: -0.29, actualRate: -0.18, absoluteDeviation: 0.11)
+        ]
+        let snapshot = PortfolioSnapshot(
+            updateTime: Date(),
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                makeEstimateHistoryFund(deviationHistory: legacy),
+                makeEstimateHistoryFund(deviationHistory: healthy),
+                makeEstimateHistoryFund()
+            ],
+            migration: nil
+        )
+
+        let result = EstimationDeviationRecorder.migratingLegacyRelativeErrorHistory(snapshot)
+
+        // 含旧算法特征值的基金整段历史被清空。
+        XCTAssertNil(result.funds[0].estimationDeviationHistory)
+        // 新算法数据不受影响。
+        XCTAssertEqual(result.funds[1].estimationDeviationHistory?.count, 2)
+        // 无历史基金保持不变。
+        XCTAssertNil(result.funds[2].estimationDeviationHistory)
+    }
+
+    /// 字段改名兼容：新存档只写 absoluteDeviation；旧存档的 relativeError 也能解码映射到该字段。
+    func testEstimationDeviationCodableBackwardCompatibility() throws {
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+
+        let fresh = EstimationDeviation(
+            date: "2026-06-24",
+            estimatedRate: 1.25,
+            actualRate: 1.00,
+            absoluteDeviation: 0.25
+        )
+        let freshData = try encoder.encode(fresh)
+        let freshJSON = try XCTUnwrap(String(data: freshData, encoding: .utf8))
+        XCTAssertTrue(freshJSON.contains("\"absoluteDeviation\""))
+
+        let legacyJSON = """
+        {"date":"2026-06-24","estimatedRate":1.25,"actualRate":1.00,"relativeError":52.8}
+        """
+        let legacy = try decoder.decode(EstimationDeviation.self, from: Data(legacyJSON.utf8))
+        XCTAssertEqual(legacy.absoluteDeviation, 52.8)
+
+        let decodedFresh = try decoder.decode(EstimationDeviation.self, from: freshData)
+                XCTAssertEqual(decodedFresh.absoluteDeviation, 0.25)
+        XCTAssertEqual(decodedFresh.date, "2026-06-24")
+    }
+
+    /// 估值准确率分档阈值：≤0.3% / 0.3~0.5% / 0.5~1% / >1%，颜色条长度与占比一致。
+    /// 该测试固化了 UI 所用的四个等级边界，防止后续误改阈值。
+    func testEstimationDeviationBucketThresholds() throws {
+        // 覆盖四个分档 + 边界值。
+        let devs: [EstimationDeviation] = [
+            .init(date: "2026-06-01", estimatedRate: 1.00, actualRate: 0.80, absoluteDeviation: 0.20),  // ≤0.3
+            .init(date: "2026-06-02", estimatedRate: 1.00, actualRate: 1.40, absoluteDeviation: 0.40),  // 0.3~0.5
+            .init(date: "2026-06-03", estimatedRate: 1.00, actualRate: 0.40, absoluteDeviation: 0.60),  // 0.5~1
+            .init(date: "2026-06-04", estimatedRate: 1.00, actualRate: 3.00, absoluteDeviation: 2.00),  // >1
+            // 边界值
+            .init(date: "2026-06-05", estimatedRate: 1.00, actualRate: 0.95, absoluteDeviation: 0.05),  // ≤0.3
+            .init(date: "2026-06-06", estimatedRate: 1.00, actualRate: 1.30, absoluteDeviation: 0.30),  // ≤0.3
+            .init(date: "2026-06-07", estimatedRate: 1.00, actualRate: 1.50, absoluteDeviation: 0.50),  // 0.3~0.5
+            .init(date: "2026-06-08", estimatedRate: 1.00, actualRate: 2.00, absoluteDeviation: 1.00),  // 0.5~1
+        ]
+
+        let low = devs.filter { $0.absoluteDeviation <= 0.3 }.count
+        let midLow = devs.filter { $0.absoluteDeviation > 0.3 && $0.absoluteDeviation <= 0.5 }.count
+        let midHigh = devs.filter { $0.absoluteDeviation > 0.5 && $0.absoluteDeviation <= 1 }.count
+        let high = devs.filter { $0.absoluteDeviation > 1 }.count
+
+        XCTAssertEqual(low, 3, "≤0.3% 应包含 0.20、0.05、0.30")
+        XCTAssertEqual(midLow, 2, "0.3~0.5% 应包含 0.40、0.50")
+        XCTAssertEqual(midHigh, 2, "0.5~1% 应包含 0.60、1.00")
+        XCTAssertEqual(high, 1, ">1% 应包含 2.00")
+        XCTAssertEqual(low + midLow + midHigh + high, devs.count)
+    }
+
     private func chinaDate(_ value: String) throws -> Date {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)

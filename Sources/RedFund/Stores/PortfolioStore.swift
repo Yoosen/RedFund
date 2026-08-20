@@ -71,8 +71,13 @@ final class PortfolioStore {
 
         do {
             if let loadedSnapshot = try repository.load() {
-                snapshot = loadedSnapshot
-                persistedSnapshot = loadedSnapshot
+                // 迁移旧版相对误差数据：绝对偏差口径下出现 >10 的异常值即视为旧算法残留，清空重录。
+                let migrated = EstimationDeviationRecorder.migratingLegacyRelativeErrorHistory(loadedSnapshot)
+                snapshot = migrated
+                persistedSnapshot = migrated
+                if migrated.funds != loadedSnapshot.funds {
+                    try? save(migrated)
+                }
                 loadState = .loaded
                 return
             }
@@ -230,6 +235,10 @@ final class PortfolioStore {
                 to: calculatedSnapshot,
                 quotes: quotes,
                 now: now
+            )
+            snapshot = EstimationDeviationRecorder.applyingConfirmedDeviation(
+                to: snapshot,
+                quotes: quotes
             )
             syncInitialTradeRecordsFromFunds()
             try save(snapshot)

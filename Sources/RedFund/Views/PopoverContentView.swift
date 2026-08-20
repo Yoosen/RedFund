@@ -3664,7 +3664,7 @@ struct PortfolioAllocationPanelView: View {
                 .frame(width: 9, height: 9)
         }
 
-        private static func categoryColor(_ type: FundType) -> Color {
+        fileprivate static func categoryColor(_ type: FundType) -> Color {
             switch type {
             case .stock:  Color(red: 201 / 255, green: 42 / 255, blue: 42 / 255)
             case .index:  Color(red: 222 / 255, green: 111 / 255, blue: 38 / 255)
@@ -3789,17 +3789,103 @@ private struct CategoryDonutView: View {
 }
 
     private var allocationBreakdownList: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            panelSectionTitle("占比明细")
-            VStack(spacing: 7) {
-                ForEach(allocationItems) { item in
-                    allocationRow(item)
+        AllocationBreakdownView(items: allocationItems)
+    }
+
+    /// 占比明细：按基金类型（股票型/债券型/混合型/QDII/指数型/货币型/其他）分组展示。
+    /// 顶部为分类选择条，点击某一分类查看该分类下的基金（基金行展示与原来一致）。
+    private struct AllocationBreakdownView: View {
+        let items: [PortfolioAllocationItem]
+        @State private var selectedType: FundType
+        @Environment(\.colorScheme) private var colorScheme
+
+        private var grouped: [(type: FundType, share: Double, funds: [PortfolioAllocationItem])] {
+            let total = items.reduce(0) { $0 + $1.amount }
+            let present = Set(items.compactMap { $0.fund.fundType })
+            let types = FundType.allCases.filter { present.contains($0) }
+            return types.map { type in
+                let funds = items.filter { ($0.fund.fundType ?? .other) == type }
+                let share = total > 0 ? funds.reduce(0) { $0 + $1.amount } / total : 0
+                return (type: type, share: share, funds: funds)
+            }
+            .sorted { $0.share > $1.share }
+        }
+
+        init(items: [PortfolioAllocationItem]) {
+            self.items = items
+            _selectedType = State(initialValue: Self.defaultType(for: items))
+        }
+
+        private static func defaultType(for items: [PortfolioAllocationItem]) -> FundType {
+            let total = items.reduce(0) { $0 + $1.amount }
+            let present = Set(items.compactMap { $0.fund.fundType })
+            let shares = FundType.allCases
+                .filter { present.contains($0) }
+                .map { type -> (FundType, Double) in
+                    let sum = items.filter { ($0.fund.fundType ?? .other) == type }
+                                    .reduce(0) { $0 + $1.amount }
+                    return (type, total > 0 ? sum / total : 0)
+                }
+            return shares.max(by: { $0.1 < $1.1 })?.0 ?? .stock
+        }
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 8) {
+                panelSectionTitle("占比明细")
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(grouped, id: \.type.id) { group in
+                            categoryChip(type: group.type, isSelected: group.type == selectedType)
+                        }
+                    }
+                    .padding(.horizontal, 2)
+                }
+                .frame(height: 30)
+
+                if let group = grouped.first(where: { $0.type == selectedType }) {
+                    VStack(spacing: 7) {
+                        ForEach(group.funds) { item in
+                            PortfolioAllocationPanelView.allocationRow(item, colorScheme: colorScheme)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(PanelDesign.border(cornerRadius: 10))
         }
-        .padding(12)
-        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(PanelDesign.border(cornerRadius: 10))
+
+        private func panelSectionTitle(_ title: String) -> some View {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.primary)
+        }
+
+        @ViewBuilder
+        private func categoryChip(type: FundType, isSelected: Bool) -> some View {
+            let color = CategoryDistributionSectionView.categoryColor(type)
+            Button {
+                selectedType = type
+            } label: {
+                Text(type.title)
+                    .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(isSelected
+                                  ? color.opacity(colorScheme == .dark ? 0.22 : 0.14)
+                                  : Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04))
+                    )
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(isSelected ? color.opacity(0.6) : Color.clear, lineWidth: 1))
+                    .foregroundStyle(isSelected ? color : .primary)
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private func allocationSummaryMetric(_ title: String, _ value: String, color: Color) -> some View {
@@ -3824,25 +3910,23 @@ private struct CategoryDonutView: View {
             .padding(.horizontal, 10)
     }
 
-    private func allocationRow(_ item: PortfolioAllocationItem) -> some View {
+    private static func allocationRow(_ item: PortfolioAllocationItem, colorScheme: ColorScheme) -> some View {
         HStack(spacing: 10) {
-            rankBadge(item.rank, color: item.color)
+            rankBadge(item.rank, color: item.color, colorScheme: colorScheme)
 
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Text(item.fund.name)
-                        .font(.system(size: 12, weight: .semibold))
-                        .lineLimit(1)
-                    Text(FundCodeFormatter.display(item.fund.code))
-                        .font(.system(size: 10, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.fund.name)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                allocationBar(item)
+                Text(FundCodeFormatter.display(item.fund.code))
+                    .font(.system(size: 10, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-
-            Spacer(minLength: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .trailing, spacing: 4) {
                 Text(MoneyFormatter.percent(item.share * 100))
@@ -3856,27 +3940,15 @@ private struct CategoryDonutView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
             }
-            .frame(width: 90, alignment: .trailing)
+            .frame(minWidth: 60, alignment: .trailing)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
         .background(item.color.opacity(colorScheme == .dark ? 0.10 : 0.055), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
-    private func allocationBar(_ item: PortfolioAllocationItem) -> some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.055))
-                Capsule()
-                    .fill(item.color.opacity(colorScheme == .dark ? 0.86 : 0.74))
-                    .frame(width: max(proxy.size.width * item.share, 3))
-            }
-        }
-        .frame(height: 6)
-    }
-
-    private func rankBadge(_ rank: Int, color: Color) -> some View {
+    private static func rankBadge(_ rank: Int, color: Color, colorScheme: ColorScheme) -> some View {
         Text("\(rank)")
             .font(.system(size: 10, weight: .bold))
             .monospacedDigit()
@@ -5693,6 +5765,14 @@ enum FundRowAmountPrivacyFormatter {
     }
 }
 
+/// 估值准确率分布的一个分桶（用于详情页直方图展示）。
+private struct EstimationBucket: Identifiable {
+    var id: String { label }
+    let label: String
+    let count: Int
+    let color: Color
+}
+
 struct FundDetailView: View {
     let store: PortfolioStore
     private let fundCode: String
@@ -5972,6 +6052,90 @@ struct FundDetailView: View {
         .overlay(PanelDesign.border(cornerRadius: 10))
     }
 
+    private var estimationAccuracySection: some View {
+        let devs = fund.estimationDeviationHistory ?? []
+        let buckets = Self.buckets(from: devs)
+
+        return VStack(alignment: .leading, spacing: 10) {
+            sectionHeader(
+                "估值准确率",
+                trailing: "近 \(min(devs.count, 30)) 天 · \(devs.count) 个样本",
+                titleSupplement: estimationAverageDeviationText
+            )
+
+            if devs.isEmpty {
+                Text("暂无足够数据。当日净值更新后将自动统计当日估值与实际涨跌幅的偏差，晚间即可查看。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                let maxCount = max(buckets.map(\.count).max() ?? 1, 1)
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(buckets) { bucket in
+                        estimationBucketRow(bucket, maxCount: maxCount)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 10))
+    }
+
+    /// 标题栏「估值准确率」后面的小号灰色补注：平均偏差 ±X.XX%；无样本时为 nil。
+    private var estimationAverageDeviationText: String? {
+        let devs = fund.estimationDeviationHistory ?? []
+        guard !devs.isEmpty else { return nil }
+        let average = devs.map(\.absoluteDeviation).reduce(0, +) / Double(devs.count)
+        return "平均偏差 ±\(average.formatted(.number.precision(.fractionLength(2))))%"
+    }
+
+        /// 把最近 30 次估值记录按「与官方净值的绝对偏差」分为四个等级：
+    ///   ≤0.3% -> 准确   0.3~0.5% -> 轻微   0.5~1% -> 较大   >1% -> 严重。
+    /// 颜色条长度按占比显示，辅以「N 次」。
+    private static func buckets(from devs: [EstimationDeviation]) -> [EstimationBucket] {
+        let low = devs.filter { $0.absoluteDeviation <= 0.3 }.count
+        let midLow = devs.filter { $0.absoluteDeviation > 0.3 && $0.absoluteDeviation <= 0.5 }.count
+        let midHigh = devs.filter { $0.absoluteDeviation > 0.5 && $0.absoluteDeviation <= 1 }.count
+        let high = devs.filter { $0.absoluteDeviation > 1 }.count
+        let accurate = Color(nsColor: StatusBarTone.menuBarColor(forRate: 1))
+        return [
+            EstimationBucket(label: "≤0.3%", count: low, color: accurate),
+            EstimationBucket(label: "0.3~0.5%", count: midLow, color: Color.yellow),
+            EstimationBucket(label: "0.5~1%", count: midHigh, color: Color.orange),
+            EstimationBucket(label: ">1%", count: high, color: Color.red)
+        ]
+    }
+
+    /// 单条分桶横条（避免在大 body 内写复杂表达式导致编译超时）。
+    private func estimationBucketRow(_ bucket: EstimationBucket, maxCount: Int) -> some View {
+        let ratio = maxCount > 0 ? CGFloat(bucket.count) / CGFloat(maxCount) : 0
+        return HStack(spacing: 8) {
+            Text(bucket.label)
+                .font(.system(size: 10, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .leading)
+
+            GeometryReader { geo in
+                Capsule()
+                    .fill(bucket.color)
+                    .frame(
+                        width: max(geo.size.width * ratio, bucket.count > 0 ? 6 : 0),
+                        height: 9,
+                        alignment: .leading
+                    )
+            }
+            .frame(height: 9)
+
+            Text("\(bucket.count)次")
+                .font(.system(size: 10, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(bucket.count > 0 ? Color.primary : Color.secondary)
+        }
+    }
+
     private var intradayTrendContent: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader(
@@ -5986,6 +6150,8 @@ struct FundDetailView: View {
                 FundIntradayRateChart(points: visibleIntradayRatePoints)
                     .frame(height: 138)
             }
+
+            estimationAccuracySection
 
             if !supplement.topHoldings.isEmpty || isSupplementLoading {
                 Divider().opacity(0.45)
@@ -6164,10 +6330,21 @@ struct FundDetailView: View {
         .background(PanelDesign.panelBackground)
     }
 
-    private func sectionHeader(_ title: String, trailing: String? = nil, showsLoading: Bool = false) -> some View {
+    private func sectionHeader(
+        _ title: String,
+        trailing: String? = nil,
+        showsLoading: Bool = false,
+        titleSupplement: String? = nil
+    ) -> some View {
         HStack(spacing: 8) {
             Text(title)
                 .font(.system(size: 12, weight: .semibold))
+            if let titleSupplement {
+                Text(titleSupplement)
+                    .font(.system(size: 10, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
             if showsLoading {
                 ProgressView()
                     .controlSize(.small)
