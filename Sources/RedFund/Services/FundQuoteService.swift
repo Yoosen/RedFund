@@ -30,16 +30,27 @@ struct FundQuoteService {
     }
 
     /// 批量获取多只基金实时行情（去重、排序、容错）。
-    func fetchQuotes(codes: [String]) async -> [String: FundQuote] {
+    /// - Parameter valuationSource: 盘中估值数据源，默认东方财富（天天基金估值接口）。
+    ///   切到小倍养基时改用其估值接口（官方净值仍来自东方财富核心接口）。
+    func fetchQuotes(
+        codes: [String],
+        valuationSource: QuoteValuationSource = .eastmoney
+    ) async -> [String: FundQuote] {
         let uniqueCodes = Array(Set(codes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }))
             .filter { !$0.isEmpty }
             .sorted()
         guard !uniqueCodes.isEmpty else { return [:] }
 
         let quotes = await fetchCoreQuotesWithFallback(uniqueCodes)
-        // 天天基金估值接口（FundValuationLast）的盘中估值优先于核心行情接口；
-        // 该接口常返回空估值（null），此时保留核心行情原值。
-        let valuations = await fetchValuationLastQuotes(codes: uniqueCodes)
+        // 盘中估值优先于核心行情接口；估值接口常返回空估值（null），此时保留核心行情原值。
+        let valuations: [String: FundValuationLastPayload]
+        switch valuationSource {
+        case .eastmoney:
+            valuations = await fetchValuationLastQuotes(codes: uniqueCodes)
+        case .xiaobei:
+            // 小倍养基仅作盘中估值源；若未登录/失败则回退为空（保留东财核心行情估值）。
+            valuations = await XiaobeiQuoteService.fetchValuations(codes: uniqueCodes)
+        }
         return Self.mergingValuations(valuations, into: quotes)
     }
 
@@ -1207,6 +1218,13 @@ private struct EastmoneyCoreQuotePayload: Decodable {
             estimateTime: estimateTimeText
         )
         let latestGrowthRateText = latestGrowthRate.stringValue?.nilIfDash
+        // growthRate 语义：
+        // - 盘中（官方净值尚未更新，officialDateHasCaughtUp == false）：取估值涨跌幅 GSZZL（估值口径）。
+        // - 净值公布后（officialDateHasCaughtUp == true）：东财会把 RZDF 回填为「官方净值相对前一交易日的真实日涨跌幅」，
+        //   故此处取 RZDF 即代表官方口径；仅在 RZDF 缺省时 fallback 到 GSZZL（估值口径，属极端边界）。
+        // 注意：growthRate 混用了「估值口径」与「官方口径」两种语义，依赖东财净值公布后回填 RZDF 的隐式行为。
+        // 下游（EstimationDeviationRecorder / PortfolioCalculator）在 paired（netValueDate == 当日）场景下
+        // 用它当官方涨跌幅是正确的，但切勿在盘中估值场景下误把它当作官方净值涨跌幅。
         let growthRate = officialDateHasCaughtUp
             ? (latestGrowthRateText != nil ? latestGrowthRateText.doubleValue : estimatedGrowthRate.doubleValue)
             : estimatedGrowthRate.doubleValue
@@ -1252,7 +1270,8 @@ private struct FundValuationLastResponse: Decodable {
 }
 
 /// 天天基金估值单条载荷（字段对应 FCODE/SHORTNAME/GSZ/GSZZL/GZTIME/NAV/PDATE）。
-private struct FundValuationLastPayload: Decodable {
+/// 内部可见：小倍养基估值服务也复用该结构以走统一的合并逻辑。
+struct FundValuationLastPayload: Decodable {
     var code: String?
     var name: String?
     var estimatedNetValue: LossyString?
@@ -1435,7 +1454,7 @@ private enum CodingKeys: String, CodingKey {
 }
 
 /// 宽松字符串解析（兼容 null/字符串/数字）。
-private struct LossyString: Decodable {
+struct LossyString: Decodable {
     var value: String
 
     init(from decoder: Decoder) throws {
@@ -1451,6 +1470,11 @@ private struct LossyString: Decodable {
         } else {
             value = ""
         }
+    }
+
+    /// 便捷构造器：用于手动构建（如小倍养基估值源）。
+    init(stringValue: String?) {
+        self.value = stringValue ?? ""
     }
 }
 

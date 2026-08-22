@@ -15356,6 +15356,7 @@ final class RedFundCoreTests: XCTestCase {
             quoteService: quoteServiceWithMockResponses([
                 "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": response
             ]),
+            settingsStore: AppSettingsStore(dataDirectory: tempDirectory),
             now: { now }
         )
         try seedPortfolio(transactionTestSnapshot(), into: store, directory: tempDirectory)

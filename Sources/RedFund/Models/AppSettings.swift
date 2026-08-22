@@ -3,7 +3,7 @@ import Foundation
 /// 应用设置模型（可编码、可比较），保存菜单栏显示、自动刷新、提醒、外观等用户偏好。
 struct AppSettings: Codable, Equatable {
     /// 当前设置数据结构的 schema 版本号。
-    static let currentSchemaVersion = 13
+    static let currentSchemaVersion = 14
     /// 新手引导流程引入时对应的 schema 版本。
     static let currentOnboardingVersion = 1
     /// 主面板默认高度（pt）。
@@ -57,6 +57,8 @@ struct AppSettings: Codable, Equatable {
     var defaultMarketIndexID: MarketIndexID = Self.defaultMarketIndexIdentifier
     /// 是否开启 Beta 功能开关。
     var betaFeaturesEnabled: Bool = false
+    /// 盘中估值数据源：默认东方财富，可切换为小倍养基（需手机号+验证码登录）。
+    var quoteValuationSource: QuoteValuationSource = .eastmoney
     /// 是否自动检查更新；关闭后启动与打开菜单时不再自动检查并提示（手动检查仍可用）。
     var autoUpdateCheckEnabled: Bool = true
     /// 已完成的新手引导版本；nil 表示尚未完成引导。
@@ -80,6 +82,7 @@ struct AppSettings: Codable, Equatable {
         showsMarketIndexes: Bool = true,
         defaultMarketIndexID: MarketIndexID = Self.defaultMarketIndexIdentifier,
         betaFeaturesEnabled: Bool = false,
+        quoteValuationSource: QuoteValuationSource = .eastmoney,
         autoUpdateCheckEnabled: Bool = true,
         completedOnboardingVersion: Int? = nil
     ) {
@@ -99,6 +102,7 @@ struct AppSettings: Codable, Equatable {
         self.showsMarketIndexes = showsMarketIndexes
         self.defaultMarketIndexID = defaultMarketIndexID
         self.betaFeaturesEnabled = betaFeaturesEnabled
+        self.quoteValuationSource = quoteValuationSource
         self.autoUpdateCheckEnabled = autoUpdateCheckEnabled
         self.completedOnboardingVersion = completedOnboardingVersion
     }
@@ -121,6 +125,7 @@ struct AppSettings: Codable, Equatable {
         case showsMarketIndexes
         case defaultMarketIndexID
         case betaFeaturesEnabled
+        case quoteValuationSource
         case autoUpdateCheckEnabled
         case completedOnboardingVersion
     }
@@ -174,6 +179,10 @@ struct AppSettings: Codable, Equatable {
             .flatMap(MarketIndexID.init(rawValue:))
             ?? Self.defaultMarketIndexIdentifier
         betaFeaturesEnabled = try container.decodeIfPresent(Bool.self, forKey: .betaFeaturesEnabled) ?? false
+        quoteValuationSource = try container.decodeIfPresent(
+            QuoteValuationSource.self,
+            forKey: .quoteValuationSource
+        ) ?? .eastmoney
         autoUpdateCheckEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoUpdateCheckEnabled) ?? true
         if container.contains(.completedOnboardingVersion) {
             completedOnboardingVersion = try container.decodeIfPresent(
@@ -522,5 +531,37 @@ enum AutoRefreshInterval: String, Codable, CaseIterable, Identifiable, Equatable
     /// 间隔说明文案。
     var detail: String {
         "每 \(title) 自动刷新基金数据，并同步更新菜单栏收益。"
+    }
+}
+
+/// 盘中估值数据源。
+/// 当前仅影响「盘中估值」的获取（官方净值仍走东方财富核心接口）。
+enum QuoteValuationSource: String, Codable, CaseIterable, Identifiable, Equatable {
+    /// 东方财富（天天基金估值接口）。
+    case eastmoney
+    /// 小倍养基（需手机号+短信验证码登录后使用其估值接口）。
+    case xiaobei
+
+    /// 用作 Identifiable 的稳定标识。
+    var id: String { rawValue }
+
+    /// 数据源中文标题。
+    var title: String {
+        switch self {
+        case .eastmoney:
+            "东方财富"
+        case .xiaobei:
+            "小倍养基"
+        }
+    }
+
+    /// 数据源详细说明文案。
+    var detail: String {
+        switch self {
+        case .eastmoney:
+            "使用天天基金估值接口获取盘中估值。"
+        case .xiaobei:
+            "使用小倍养基估值接口，需先用手机号+验证码登录。"
+        }
     }
 }

@@ -24,8 +24,8 @@ struct RedFundApp: App {
 // @MainActor 保证类内成员默认在主线程执行（UI 相关操作要求）
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
-    let portfolioStore = PortfolioStore()       // 持仓数据仓库：管理基金持仓与行情
-    let settingsStore = AppSettingsStore()      // 应用设置仓库：读写用户偏好
+    let portfolioStore = PortfolioStore(settingsStore: AppSettingsStore.shared)       // 持仓数据仓库：管理基金持仓与行情
+    let settingsStore = AppSettingsStore.shared      // 应用设置仓库：读写用户偏好
     let marketIndexStore = MarketIndexStore()   // 大盘指数仓库：管理指数数据
     let updateStore = AppUpdateStore()          // 更新仓库：负责检查/下载新版本
     // 操作提醒通知的"展示闸门"，用于去重/过滤重复通知；nonisolated 表示不受 MainActor 约束，可在任意线程访问

@@ -12,6 +12,7 @@ final class PortfolioStore {
     private(set) var isRefreshingQuotes = false
     private(set) var dataDirectory: URL
     private let quoteService: FundQuoteService
+    private let settingsStore: AppSettingsStore
     private let nowProvider: () -> Date
     private let repository: any PortfolioRepository
     let performanceStore: PortfolioPerformanceStore
@@ -35,11 +36,13 @@ final class PortfolioStore {
     init(
         dataDirectory: URL = AppDataPaths.sharedDataDirectory,
         quoteService: FundQuoteService = FundQuoteService(),
+        settingsStore: AppSettingsStore = AppSettingsStore(),
         performanceStore: PortfolioPerformanceStore? = nil,
         now: @escaping () -> Date = { .now }
     ) {
         self.dataDirectory = dataDirectory
         self.quoteService = quoteService
+        self.settingsStore = settingsStore
         self.nowProvider = now
         self.repository = JSONPortfolioRepository(dataDirectory: dataDirectory)
         self.performanceStore = performanceStore ?? PortfolioPerformanceStore(dataDirectory: dataDirectory)
@@ -49,11 +52,13 @@ final class PortfolioStore {
     init(
         repository: any PortfolioRepository,
         quoteService: FundQuoteService = FundQuoteService(),
+        settingsStore: AppSettingsStore = AppSettingsStore(),
         performanceStore: PortfolioPerformanceStore? = nil,
         now: @escaping () -> Date = { .now }
     ) {
         self.dataDirectory = repository.dataDirectory
         self.quoteService = quoteService
+        self.settingsStore = settingsStore
         self.nowProvider = now
         self.repository = repository
         self.performanceStore = performanceStore ?? PortfolioPerformanceStore(dataDirectory: repository.dataDirectory)
@@ -224,7 +229,11 @@ final class PortfolioStore {
         }
 
         do {
-            let quotes = await quoteService.fetchQuotes(codes: codes)
+            let valuationSource = settingsStore.settings.quoteValuationSource
+            let quotes = await quoteService.fetchQuotes(
+                codes: codes,
+                valuationSource: valuationSource
+            )
             repairAmountModeSharePrecisionFromTradeRecords()
             await processPendingTrades(quotes: quotes)
             await processPendingConversions(quotes: quotes)
@@ -954,6 +963,7 @@ final class PortfolioStore {
             let stagingStore = PortfolioStore(
                 repository: stagingRepository,
                 quoteService: quoteService,
+                settingsStore: settingsStore,
                 performanceStore: stagingPerformanceStore,
                 now: nowProvider
             )

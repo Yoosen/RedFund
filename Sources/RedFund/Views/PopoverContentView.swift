@@ -13,7 +13,7 @@ struct MainPanelWindowView: View {
     let marketIndexStore: MarketIndexStore
     let updateStore: AppUpdateStore
     let uiState: PopoverUIState
-    let selectedFundCode: String?
+    @Binding var selectedFundCode: String?
     let onRefresh: (() async -> Void)?
     let onOpenSettings: () -> Void
     let onClose: () -> Void
@@ -52,7 +52,7 @@ struct MainPanelWindowView: View {
                     settingsStore: settingsStore,
                     marketIndexStore: marketIndexStore,
                     updateStore: updateStore,
-                    selectedFundCode: selectedFundCode,
+                    selectedFundCode: $selectedFundCode,
                     onRefresh: onRefresh,
                     onOpenSettings: onOpenSettings,
                     onOpenPortfolioBreakdown: onOpenPortfolioBreakdown,
@@ -212,7 +212,7 @@ struct PopoverContentView: View {
     let settingsStore: AppSettingsStore
     let marketIndexStore: MarketIndexStore
     let updateStore: AppUpdateStore
-    let selectedFundCode: String?
+    @Binding var selectedFundCode: String?
     let onRefresh: (() async -> Void)?
     let onOpenSettings: () -> Void
     let onOpenPortfolioBreakdown: () -> Void
@@ -239,6 +239,7 @@ struct PopoverContentView: View {
     @State private var isRefreshing = false
     @State private var isRefreshStatusPulsing = false
     @State private var filter: FundListFilter = .holding
+    @State private var searchText: String = ""
     @State private var sortMode: FundSortMode = .todayRate
     @State private var isSortMenuPresented = false
     @State private var isMarketIndexExpanded = false
@@ -251,6 +252,8 @@ struct PopoverContentView: View {
                 .zIndex(1)
             toolbar
                 .zIndex(3)
+            PortfolioSearchBar(searchText: $searchText, filter: $filter)
+                .zIndex(2)
             fundList
                 .layoutPriority(1)
                 .zIndex(0)
@@ -458,6 +461,147 @@ struct PopoverContentView: View {
         .overlay(alignment: .bottom) {
             Divider()
                 .opacity(colorScheme == .dark ? 0.45 : 0.55)
+        }
+    }
+
+    /// 搜索栏：仅在持仓筛选下显示（待确认列表本身较短，无需搜索）。
+    /// 按基金名称或代码（含展示格式化）不区分大小写关键字过滤 fundList。
+    /// 原生 NSTextField：关键点是 `acceptsFirstResponder` 返回 false——
+    /// 这样 AppKit 在窗口重新成为 key 窗口时（例如关闭右侧基金详情子面板后，
+    /// 主面板窗口重新 key 上来）不会把本字段自动恢复为 first responder，
+    /// 从而彻底杜绝"点过搜索框后，打开/关闭详情页光标闪动"的问题。
+    /// 但用户真实点击时，仍通过 mouseDown 里手动 makeFirstResponder(self)
+    /// 获得焦点以输入（手动设置 first responder 不检查 acceptsFirstResponder）。
+    private final class PortfolioSearchTextField: NSTextField {
+        /// 仅鼠标按下到抬起之间为 true，允许本次成为 first responder。
+        private var allowClickFocus = false
+
+        override var acceptsFirstResponder: Bool {
+            // 默认拒绝：窗口 key 状态切换等自动流程都不会聚焦本字段，
+            // 只有下面 mouseDown 里显式 makeFirstResponder 才生效。
+            false
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            // 点击时主动抢焦点（绕过 acceptsFirstResponder 的限制），让用户可以输入。
+            if let window, window.firstResponder !== self {
+                window.makeFirstResponder(self)
+            }
+            allowClickFocus = true
+            super.mouseDown(with: event)
+            allowClickFocus = false
+        }
+
+        override func becomeFirstResponder() -> Bool {
+            // 仅允许真实点击触发的聚焦；其余路径（含窗口自动恢复）一律拒绝。
+            guard allowClickFocus else { return false }
+            return super.becomeFirstResponder()
+        }
+    }
+
+    /// 用原生 NSTextField 包装的搜索框：不会在视图重建时自动抢焦点，仅点击时聚焦。
+    private struct PortfolioSearchFieldView: NSViewRepresentable {
+        @Binding var text: String
+
+        @MainActor
+        func makeNSView(context: Context) -> NSTextField {
+            let field = PortfolioSearchTextField()
+            field.placeholderString = "搜索基金名称或代码"
+            field.font = NSFont.systemFont(ofSize: 12)
+            field.drawsBackground = false
+            field.isBordered = false
+            field.focusRingType = .none
+            field.lineBreakMode = .byTruncatingTail
+            field.usesSingleLineMode = true
+            field.cell?.wraps = false
+            field.cell?.isScrollable = true
+            field.delegate = context.coordinator
+            context.coordinator.onTextChange = { newValue in
+                text = newValue
+            }
+            return field
+        }
+
+        @MainActor
+        func updateNSView(_ field: NSTextField, context: Context) {
+            if field.stringValue != text {
+                field.stringValue = text
+            }
+        }
+
+        @MainActor
+        func makeCoordinator() -> Coordinator {
+            Coordinator()
+        }
+
+        @MainActor
+        final class Coordinator: NSObject, NSTextFieldDelegate {
+            var onTextChange: ((String) -> Void)?
+
+            func controlTextDidChange(_ obj: Notification) {
+                guard let field = obj.object as? NSTextField else { return }
+                onTextChange?(field.stringValue)
+            }
+        }
+    }
+
+    /// 搜索栏独立子视图：只依赖 searchText / filter 两个绑定，完全不读取 store，
+    /// 因此父视图（PopoverContentView）因行情刷新重算 body 时不会被重建，
+    /// 从架构上杜绝搜索框 NSTextField 被反复重挂载导致的光标闪动。
+    private struct PortfolioSearchBar: View {
+        @Binding var searchText: String
+        @Binding var filter: FundListFilter
+        @Environment(\.colorScheme) private var colorScheme
+
+        var body: some View {
+            if filter != .pending {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 14, height: 14)
+
+                    PortfolioSearchFieldView(text: $searchText)
+                        .frame(height: 22)
+
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .focusable(false)
+                        .help("清除搜索")
+                    }
+                }
+                .padding(.horizontal, 8)
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .background(
+                    Color(nsColor: .textBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? 0.30 : 0.18), lineWidth: 0.55)
+                )
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(searchBarSurfaceBackground)
+                .overlay(alignment: .bottom) {
+                    Divider()
+                        .opacity(colorScheme == .dark ? 0.45 : 0.55)
+                }
+            }
+        }
+
+        private var searchBarSurfaceBackground: Color {
+            colorScheme == .dark
+                ? Color(red: 15 / 255, green: 17 / 255, blue: 21 / 255)
+                : Color(red: 250 / 255, green: 248 / 255, blue: 243 / 255)
         }
     }
 
@@ -920,12 +1064,21 @@ struct PopoverContentView: View {
     @ViewBuilder
     private var fundRows: some View {
         if filteredFunds.isEmpty {
-            ContentUnavailableView(
-                "暂无基金数据",
-                systemImage: "tray",
-                description: Text("点击上方 + 添加第一只基金，或在设置中重新查看使用引导。")
-            )
+            if !searchText.isEmpty {
+                ContentUnavailableView(
+                    "未找到匹配的基金",
+                    systemImage: "magnifyingglass",
+                    description: Text("没有名称或代码包含“\(searchText)”的基金。")
+                )
                 .frame(height: 300)
+            } else {
+                ContentUnavailableView(
+                    "暂无基金数据",
+                    systemImage: "tray",
+                    description: Text("点击上方 + 添加第一只基金，或在设置中重新查看使用引导。")
+                )
+                .frame(height: 300)
+            }
         } else {
             ForEach(filteredFunds) { fund in
                 let isClosedZeroPosition = PendingFundDisplayRules.isClosedZeroPosition(
@@ -2147,7 +2300,20 @@ struct PopoverContentView: View {
             }
         }
 
-        return FundListSorter.sort(funds, mode: sortMode)
+        let searched = funds.filter { fund in
+            searchText.isEmpty ? true : matchesSearch(fund)
+        }
+
+        return FundListSorter.sort(searched, mode: sortMode)
+    }
+
+    /// 按名称或代码（含展示格式）做不区分大小写的关键字匹配。
+    private func matchesSearch(_ fund: FundPosition) -> Bool {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return true }
+        let name = fund.name.lowercased()
+        let code = FundCodeFormatter.display(fund.code).lowercased()
+        return name.contains(query) || code.contains(query)
     }
 
     private func count(for value: FundListFilter) -> Int {
@@ -3915,15 +4081,15 @@ private struct CategoryDonutView: View {
             rankBadge(item.rank, color: item.color, colorScheme: colorScheme)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.fund.name)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
                 Text(FundCodeFormatter.display(item.fund.code))
                     .font(.system(size: 10, weight: .medium))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(item.fund.name)
+                    .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)

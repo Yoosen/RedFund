@@ -362,7 +362,7 @@ private final class OnboardingAddFlowState {
 }
 
 @MainActor
-final class StatusBarController: NSObject {
+final class StatusBarController: NSObject, ObservableObject {
     // ---- 核心依赖 ----
     private let statusItem: NSStatusItem             // 系统菜单栏上的状态项（图标+文字）
     private let store: PortfolioStore               // 持仓数据仓库
@@ -385,7 +385,7 @@ final class StatusBarController: NSObject {
     private var mainPanelHostingView: NSHostingView<AnyView>?
     private var activeChildPanel: ChildPanelRoute?      // 当前打开的子面板路由
     private var childPanelReturnRoute: ChildPanelRoute? // 交易/编辑类子面板的"返回路由"（取消时回退到上一步，而非直接关闭）
-    private var selectedFundCode: String?               // 当前选中的基金代码
+    @Published private var selectedFundCode: String?               // 当前选中的基金代码
     private var jdFinanceLoginCompletion: ((String?) -> Void)? // 京东登录完成回调（cookieHeader 或 nil）
     private var localEventMonitor: Any?                 // 应用内事件监听（点窗外关闭等）
     private var globalEventMonitor: Any?                // 全局鼠标事件监听
@@ -782,7 +782,10 @@ final class StatusBarController: NSObject {
             marketIndexStore: marketIndexStore,
             updateStore: updateStore,
             uiState: popoverState,
-            selectedFundCode: selectedFundCode,
+            selectedFundCode: Binding(
+                get: { [weak self] in self?.selectedFundCode },
+                set: { [weak self] in self?.selectedFundCode = $0 }
+            ),
             onRefresh: { [weak self] in
                 await self?.refreshQuotesAndStatusTitleAsync(backfillTypes: true)
             },
@@ -877,7 +880,9 @@ final class StatusBarController: NSObject {
         guard let (contentView, size) = makeChildPanelContent(for: route) else { return }
         activeChildPanel = route
         selectedFundCode = route.selectedFundCode
-        updateMainPanelRootView() // 让主面板知道当前选中的基金/子面板，用于高亮等
+        // 主面板窗口即将 resign key（子面板 makeKey），先交出主面板 first responder，
+        // 避免搜索框 field editor 在窗口 key 切换过程中被保留/恢复导致光标闪动。
+        mainPanelWindow?.makeFirstResponder(nil)
 
         if case .fundDetail = route {
             // 进入基金详情时立即刷新一次行情，避免估值停留在上一次成功刷新的结果。
@@ -1606,14 +1611,14 @@ final class StatusBarController: NSObject {
         setStatusItemHighlighted(false)
     }
 
-    // 清空子面板状态；若此前有打开的面板/选中基金，则刷新主面板根视图以更新高亮
+    // 清空子面板状态；主面板高亮通过 selectedFundCode 的 @Binding 响应式更新，无需重建整树
     private func clearChildPanelState() {
-        let shouldRefreshMainPanel = activeChildPanel != nil || selectedFundCode != nil
         activeChildPanel = nil
         selectedFundCode = nil
-        if shouldRefreshMainPanel {
-            updateMainPanelRootView()
-        }
+        // 子面板关闭、主面板窗口即将重新成为 key 之前，主动交出主面板当前 first responder
+        // （多半是搜索框的 field editor）。否则 AppKit 在窗口重新 key 时会自动恢复这个
+        // first responder，导致点过搜索框后打开/关闭详情页时光标闪动。
+        mainPanelWindow?.makeFirstResponder(nil)
     }
 
     private func refreshVisiblePanels() {

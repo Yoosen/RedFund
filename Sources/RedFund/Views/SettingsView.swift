@@ -120,6 +120,13 @@ struct SettingsView: View {
     @State private var clearHoldingsStatusMessage: String?
     @State private var isClearingJDFinanceSession = false
     @State private var jdFinanceSessionStatusMessage: String?
+
+    // 小倍养基估值数据源登录状态。
+    @State private var xiaobeiPhone: String = ""
+    @State private var xiaobeiSMSCode: String = ""
+    @State private var isXiaobeiSendingCode = false
+    @State private var isXiaobeiLoggingIn = false
+    @State private var xiaobeiStatusMessage: String?
     @State private var feedbackStatusMessage: String?
     @Namespace private var appearanceModeSelectionNamespace
     @Namespace private var menuBarContentModeSelectionNamespace
@@ -357,6 +364,10 @@ struct SettingsView: View {
     /// “数据”分区：实验功能 / 京东会话 / 本地数据（清空持仓）。
     private var dataSettingsContent: some View {
         VStack(alignment: .leading, spacing: 10) {
+            PanelSection(title: "数据源") {
+                quoteValuationSourceSection
+            }
+
             PanelSection(title: "实验功能") {
                 betaFeaturesSection
             }
@@ -649,6 +660,170 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
+    /// 盘中估值数据源选择：东方财富 / 小倍养基。
+    private var quoteValuationSourceSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Picker("", selection: quoteValuationSourceBinding) {
+                ForEach(QuoteValuationSource.allCases) { source in
+                    Text(source.title).tag(source)
+                }
+            }
+            .pickerStyle(.segmented)
+            .focusable(false)
+
+            Text(
+                settingsStore.settings.quoteValuationSource == .xiaobei
+                    ? "小倍养基：需先用手机号 + 验证码登录，登录后用作盘中估值。"
+                    : "东方财富：使用天天基金估值接口获取盘中估值。"
+            )
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if settingsStore.settings.quoteValuationSource == .xiaobei {
+                Divider()
+                    .overlay(.secondary.opacity(0.14))
+                xiaobeiSessionSection
+            }
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
+    /// 盘中估值数据源绑定的写入：切换后写回 settingsStore 并触发刷新。
+    private var quoteValuationSourceBinding: Binding<QuoteValuationSource> {
+        Binding(
+            get: { settingsStore.settings.quoteValuationSource },
+            set: { source in
+                settingsStore.setQuoteValuationSource(source)
+                onSettingsChanged?()
+            }
+        )
+    }
+
+    /// 小倍养基登录子区块：手机号 + 验证码登录 / 登出。
+    private var xiaobeiSessionSection: some View {
+        let loggedIn = XiaobeiSessionStore.shared.isLoggedIn
+        return VStack(alignment: .leading, spacing: 8) {
+            if loggedIn {
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                    Text("已登录：\(XiaobeiSessionStore.shared.session?.phone ?? "")")
+                        .font(.system(size: 10, weight: .medium))
+                    Spacer()
+                    Button(action: xiaobeiLogout) {
+                        PanelButtonLabel(
+                            title: "登出",
+                            systemImage: "rectangle.portrait.and.arrow.right",
+                            style: .secondary
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("手机号", text: $xiaobeiPhone)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        .overlay(PanelDesign.border(cornerRadius: 7))
+
+                    HStack(spacing: 8) {
+                        TextField("验证码", text: $xiaobeiSMSCode)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 11))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            .overlay(PanelDesign.border(cornerRadius: 7))
+                        Button(action: xiaobeiSendCode) {
+                            PanelButtonLabel(
+                                title: isXiaobeiSendingCode ? "发送中..." : "获取验证码",
+                                systemImage: "message",
+                                style: .secondary,
+                                isEnabled: !xiaobeiPhone.isEmpty && !isXiaobeiSendingCode
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
+                        .disabled(xiaobeiPhone.isEmpty || isXiaobeiSendingCode)
+                    }
+
+                    Button(action: xiaobeiLogin) {
+                        PanelButtonLabel(
+                            title: isXiaobeiLoggingIn ? "登录中..." : "登录",
+                            systemImage: "person.badge.key",
+                            style: .primary,
+                            isEnabled: !xiaobeiPhone.isEmpty && !xiaobeiSMSCode.isEmpty && !isXiaobeiLoggingIn
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
+                    .disabled(xiaobeiPhone.isEmpty || xiaobeiSMSCode.isEmpty || isXiaobeiLoggingIn)
+                }
+            }
+
+            if let message = xiaobeiStatusMessage {
+                Text(message)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// 小倍养基：发送短信验证码。
+    private func xiaobeiSendCode() {
+        guard !xiaobeiPhone.isEmpty else { return }
+        isXiaobeiSendingCode = true
+        xiaobeiStatusMessage = nil
+        Task { @MainActor in
+            do {
+                let ok = try await XiaobeiQuoteService.sendSMSCode(phone: xiaobeiPhone)
+                xiaobeiStatusMessage = ok ? "验证码已发送，请查收短信。" : "发送验证码失败，请稍后重试。"
+            } catch {
+                xiaobeiStatusMessage = "发送失败：\(error.localizedDescription)"
+            }
+            isXiaobeiSendingCode = false
+        }
+    }
+
+    /// 小倍养基：手机号 + 验证码登录，成功后持久化会话并触发刷新。
+    private func xiaobeiLogin() {
+        guard !xiaobeiPhone.isEmpty, !xiaobeiSMSCode.isEmpty else { return }
+        isXiaobeiLoggingIn = true
+        xiaobeiStatusMessage = nil
+        Task { @MainActor in
+            do {
+                let session = try await XiaobeiQuoteService.login(
+                    phone: xiaobeiPhone,
+                    code: xiaobeiSMSCode
+                )
+                XiaobeiSessionStore.shared.save(session)
+                xiaobeiStatusMessage = "登录成功，已使用小倍养基估值源。"
+                onSettingsChanged?()
+                await onRefresh?()
+            } catch {
+                xiaobeiStatusMessage = "登录失败：\(error.localizedDescription)"
+            }
+            isXiaobeiLoggingIn = false
+        }
+    }
+
+    /// 小倍养基：登出并清除本地会话。
+    private func xiaobeiLogout() {
+        XiaobeiSessionStore.shared.clear()
+        xiaobeiStatusMessage = "已登出小倍养基。"
+        xiaobeiSMSCode = ""
+        onSettingsChanged?()
     }
 
     /// “京东会话”子区块：清除本机京东网页登录状态（不动本地持仓/收益）。

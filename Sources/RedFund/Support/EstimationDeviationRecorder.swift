@@ -59,6 +59,9 @@ enum EstimationDeviationRecorder {
             }
 
             let estimatedRate = lastPoint.rate
+            // actualRate 取 quote.growthRate：本配对分支仅在 netValueDate == intradayDate（净值已公布）时进入，
+            // 此时 growthRate 已是东财回填的官方净值涨跌幅（RZDF，官方口径），与 estimatedRate（盘中估值涨跌幅）可比。
+            // 若 growthRate 因 RZDF 缺省 fallback 到估值口径，则此处会失真（极端边界，不常见）。
             let actualRate = quote.growthRate
             // 绝对偏差（百分点）：|实际-预估|。例如实际 -0.72%、预估 -1.10%，偏差 0.38。
             let absoluteDeviation = abs(actualRate - estimatedRate)

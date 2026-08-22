@@ -6,6 +6,9 @@ import Observation
 @Observable
 @MainActor
 final class AppSettingsStore {
+    /// 全局共享实例（与注入实例共享同一数据目录）。
+    @MainActor static let shared = AppSettingsStore()
+
     /// 设置加载来源：新建 / 读取已有 / 从损坏数据恢复。
     enum LoadOrigin: Equatable {
         case createdNew
@@ -147,6 +150,12 @@ final class AppSettingsStore {
     /// 设置是否自动检查更新（关闭后不再自动检查并提示，手动检查不受影响）。
     func setAutoUpdateCheckEnabled(_ isEnabled: Bool) {
         settings.autoUpdateCheckEnabled = isEnabled
+        try? save()
+    }
+
+    /// 设置盘中估值数据源（东方财富 / 小倍养基）。
+    func setQuoteValuationSource(_ source: QuoteValuationSource) {
+        settings.quoteValuationSource = source
         try? save()
     }
 

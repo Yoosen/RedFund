@@ -330,6 +330,8 @@ enum PortfolioCalculator {
         case .officialUpdated, .laggedNetValueUpdated:
             // 滞后净值揭示（如 QDII T+1/T+2）的涨幅归属刷新当日：
             // 用净值日期涨跌幅反推差额，金额记在刷新当日而非净值真实日期。
+            // 此处 growthRate 在 officialUpdated/laggedNetValueUpdated 分支下即「官方净值相对前一交易日的真实日涨跌幅」
+            // （netValueDate 已更新到当日，growthRate 为东财回填的 RZDF 官方口径），用于反推差额正确。
             let denominator = 100 + quote.growthRate
             guard denominator != 0 else { return 0 }
             return confirmedShares * netValue * quote.growthRate / denominator
@@ -350,6 +352,7 @@ enum PortfolioCalculator {
             guard netValue > 0 else { return 0 }
             return confirmedShares * netValue
         case .officialUpdated, .laggedNetValueUpdated:
+            // 同上分支：growthRate 为官方净值涨跌幅（RZDF 官方口径），反推前一交易日净值 previousNetValue 正确。
             let multiplier = 1 + quote.growthRate / 100
             guard multiplier != 0 else { return 0 }
             let previousNetValue = netValue / multiplier
