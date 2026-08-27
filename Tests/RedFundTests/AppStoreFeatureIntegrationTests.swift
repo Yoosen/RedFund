@@ -198,10 +198,10 @@ final class AppStoreFeatureIntegrationTests: XCTestCase {
         XCTAssertFalse(ChildPanelRoute.settings.ownsJDFinanceLoginPanel)
     }
 
-    func testHoldingPerformanceUsesExactlyTheRequestedThreeModules() {
+    func testHoldingPerformanceUsesExactlyTheRequestedModules() {
         XCTAssertEqual(
             HoldingPerformancePage.allCases.map(\.title),
-            ["持仓收益排行", "收益曲线", "收益日历"]
+            ["收益日历", "持仓收益排行"]
         )
         XCTAssertEqual(
             IncomeRankingMetric.allCases.map(\.holdingPickerTitle),
@@ -226,12 +226,6 @@ final class AppStoreFeatureIntegrationTests: XCTestCase {
         XCTAssertFalse(
             HoldingPerformancePresentation.showsJDFinanceCompletionAction(
                 page: .ranking,
-                betaFeaturesEnabled: true
-            )
-        )
-        XCTAssertTrue(
-            HoldingPerformancePresentation.showsJDFinanceCompletionAction(
-                page: .curve,
                 betaFeaturesEnabled: true
             )
         )

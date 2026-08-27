@@ -23,7 +23,7 @@ struct PortfolioPerformanceView: View {
     init(
         portfolioStore: PortfolioStore,
         store: PortfolioPerformanceStore,
-        initialPage: HoldingPerformancePage = .ranking,
+        initialPage: HoldingPerformancePage = .calendar,
         initialRankingMetric: IncomeRankingMetric = .amount,
         initialRange: PortfolioPerformanceRange = .threeMonths,
         initialDisplayedMonth: Date? = nil,
@@ -127,7 +127,7 @@ struct PortfolioPerformanceView: View {
         return "自 \(start) 起 · \(tradingDayCount) 个记录日"
     }
 
-    /// 按当前页切换内容：排行页显示今日收益排行面板，曲线/日历页显示收益图区块。
+    /// 按当前页切换内容：排行页显示今日收益排行面板，收益日历页显示曲线 + 日历合并区块。
     @ViewBuilder
     private var pageContent: some View {
         switch page {
@@ -140,7 +140,7 @@ struct PortfolioPerformanceView: View {
                 isEmbedded: true,
                 metricSelection: $rankingMetric
             )
-        case .curve, .calendar:
+        case .calendar:
             performancePageContent
         }
     }
@@ -169,11 +169,8 @@ struct PortfolioPerformanceView: View {
                     }
                     summaryRow
                     sourceSummary
-                    if page == .curve {
-                        curveContent
-                    } else {
-                        calendarContent
-                    }
+                    curveContent
+                    calendarContent
                 }
                 .padding(.bottom, 12)
             }
@@ -468,21 +465,20 @@ private enum PortfolioPerformanceSemanticColor {
 }
 
 enum HoldingPerformancePage: String, CaseIterable, Identifiable {
-    case ranking
-    case curve
+    /// 收益日历：累计收益曲线图在上、每日盈亏日历在下，作为默认展示入口。
     case calendar
+    /// 持仓收益排行。
+    case ranking
 
     /// 标识符：等于枚举原始值。
     var id: String { rawValue }
-    /// 各页面标题：持仓收益排行 / 收益曲线 / 收益日历。
+    /// 各页面标题：收益日历（曲线 + 日历合并）/ 持仓收益排行。
     var title: String {
         switch self {
-        case .ranking:
-            "持仓收益排行"
-        case .curve:
-            "收益曲线"
         case .calendar:
             "收益日历"
+        case .ranking:
+            "持仓收益排行"
         }
     }
 }

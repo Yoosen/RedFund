@@ -8710,6 +8710,32 @@ final class RedFundCoreTests: XCTestCase {
         XCTAssertEqual(supplement.yesterdayPoint?.equityReturn, 1.16)
     }
 
+    func testFundDetailSupplementKeepsCachedTopHoldingsWhenRefreshReturnsEmpty() {
+        let cachedHolding = FundStockHolding(
+            code: "600519",
+            name: "贵州茅台",
+            weight: "8.50%",
+            changeRate: 1.2
+        )
+        let cached = FundDetailSupplement(
+            trend: [],
+            history: [],
+            topHoldings: [cachedHolding],
+            relatedSectors: [],
+            industryAllocation: [],
+            assetAllocation: [],
+            holdingDisclosureDate: "2026-06-30",
+            industryDisclosureDate: nil,
+            assetAllocationDate: nil,
+            yesterdayPoint: nil
+        )
+
+        let merged = cached.mergingAvailableData(from: .empty)
+
+        XCTAssertEqual(merged.topHoldings, [cachedHolding])
+        XCTAssertEqual(merged.holdingDisclosureDate, "2026-06-30")
+    }
+
     @MainActor
     func testAmountPositionDerivesSharesAndCostLikeFundBaby() async throws {
         let service = quoteServiceWithMockResponses([

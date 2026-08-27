@@ -247,14 +247,17 @@ struct PopoverContentView: View {
     @Namespace private var filterSwitchNamespace
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
+        // 待确认活动等派生数据构建成本较高，单次 body 求值内只计算一份，
+        // 再透传给各子视图，避免 header/toolbar/fundList 各自重复全量重建。
+        let listContent = makeDerivedListContent()
+        return VStack(spacing: 0) {
+            header(listContent)
                 .zIndex(1)
-            toolbar
+            toolbar(listContent)
                 .zIndex(3)
             PortfolioSearchBar(searchText: $searchText, filter: $filter)
                 .zIndex(2)
-            fundList
+            fundList(listContent)
                 .layoutPriority(1)
                 .zIndex(0)
             if settingsStore.settings.showsMarketIndexes {
@@ -277,16 +280,16 @@ struct PopoverContentView: View {
             Text(deletePendingActivityConfirmationMessage(for: activity))
         }
         .onAppear {
-            normalizePendingActivityNoticeDismissal()
+            normalizePendingActivityNoticeDismissal(listContent)
         }
-        .onChange(of: pendingActivityIDs) { _, _ in
-            normalizePendingActivityNoticeDismissal()
+        .onChange(of: listContent.pendingActivityIDs) { _, _ in
+            normalizePendingActivityNoticeDismissal(listContent)
         }
     }
 
     /// 头部总览：刷新状态 + 市场时段徽标 + 隐私开关；状态横幅/更新提示行；
     /// 持仓金额、持仓收益、持仓收益率三张卡片；待确认影响条；实时收益(元/率) 大区。
-    private var header: some View {
+    private func header(_ content: DerivedListContent) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
                 HStack(spacing: 6) {
@@ -345,7 +348,7 @@ struct PopoverContentView: View {
                 .help("打开持仓收益（按收益率）")
             }
 
-            if let pendingHeaderImpact {
+            if let pendingHeaderImpact = content.pendingHeaderImpact {
                 Button {
                     selectFilter(.pending)
                 } label: {
@@ -423,9 +426,9 @@ struct PopoverContentView: View {
     }
 
     /// 工具栏：左侧持仓/待确认筛选切换，中间排序菜单（点击展开），右侧操作按钮组（添加/刷新/设置等）。
-    private var toolbar: some View {
+    private func toolbar(_ content: DerivedListContent) -> some View {
         HStack(spacing: 5) {
-            filterSwitchControl
+            filterSwitchControl(content)
 
             Spacer(minLength: 4)
 
@@ -901,10 +904,10 @@ struct PopoverContentView: View {
     }
 
     /// 持仓 / 待确认 筛选切换控件（选中态带滑动高亮）。
-    private var filterSwitchControl: some View {
+    private func filterSwitchControl(_ content: DerivedListContent) -> some View {
         HStack(spacing: 2) {
             ForEach(visibleFilters) { value in
-                filterSwitchButton(value)
+                filterSwitchButton(value, content: content)
             }
         }
         .padding(2)
@@ -917,9 +920,9 @@ struct PopoverContentView: View {
         .help("切换基金筛选")
     }
 
-    private func filterSwitchButton(_ value: FundListFilter) -> some View {
+    private func filterSwitchButton(_ value: FundListFilter, content: DerivedListContent) -> some View {
         let isSelected = filter == value
-        let currentCount = count(for: value)
+        let currentCount = count(for: value, in: content)
         let isPending = value == .pending
         let pendingHasItems = isPending && currentCount > 0
 
@@ -1037,33 +1040,35 @@ struct PopoverContentView: View {
 
     /// 中部列表区：筛选为“待确认”时显示待确认交易列表，否则显示基金列表。
     /// 手动刷新走工具栏刷新按钮（而非下拉刷新，Mac 菜单栏不采用下拉刷新交互）。
-    private var fundList: some View {
+    private func fundList(_ content: DerivedListContent) -> some View {
         ScrollView {
             if filter == .pending {
                 VStack(spacing: 0) {
                     MainPopoverNativeScrollConfiguration()
                         .frame(height: 0)
-                    pendingActivityList
+                    pendingActivityList(content)
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
             } else {
                 LazyVStack(spacing: 0) {
                     MainPopoverNativeScrollConfiguration()
                         .frame(height: 0)
-                    fundRows
+                    fundRows(content)
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
             }
         }
-        .scrollIndicators(.visible)
+        // 滚动指示条行为由 MainPopoverNativeScrollConfiguration 原生接管：
+        // overlay + autohide，滚动时短暂浮现，停止后自动消失，不再常驻
         .frame(maxHeight: .infinity, alignment: .top)
         .background(listSurfaceBackground)
     }
 
     /// 基金列表行：无数据时空状态；否则逐个渲染 FundRowView（按当前筛选/排序）。
     @ViewBuilder
-    private var fundRows: some View {
-        if filteredFunds.isEmpty {
+    private func fundRows(_ content: DerivedListContent) -> some View {
+        let rows = filteredFunds(in: content)
+        if rows.isEmpty {
             if !searchText.isEmpty {
                 ContentUnavailableView(
                     "未找到匹配的基金",
@@ -1080,10 +1085,10 @@ struct PopoverContentView: View {
                 .frame(height: 300)
             }
         } else {
-            ForEach(filteredFunds) { fund in
+            ForEach(rows) { fund in
                 let isClosedZeroPosition = PendingFundDisplayRules.isClosedZeroPosition(
                     fund,
-                    tradeRecords: tradeRecords
+                    tradeRecords: content.tradeRecords
                 )
                 FundRowView(
                     fund: fund,
@@ -1102,17 +1107,17 @@ struct PopoverContentView: View {
 
     /// 待确认交易列表：无数据时空状态；否则渲染待确认提醒条 + 各 PendingTradeActivityRow。
     @ViewBuilder
-    private var pendingActivityList: some View {
-        if pendingActivities.isEmpty {
+    private func pendingActivityList(_ content: DerivedListContent) -> some View {
+        if content.pendingActivities.isEmpty {
             ContentUnavailableView("暂无待确认交易", systemImage: "clock.badge.checkmark")
                 .frame(height: 300)
         } else {
             VStack(spacing: 0) {
-                if showsPendingActivityNotice {
-                    PendingActivityNotice(onDismiss: dismissPendingActivityNotice)
+                if showsPendingActivityNotice(content) {
+                    PendingActivityNotice(onDismiss: { dismissPendingActivityNotice(content) })
                     Divider()
                 }
-                ForEach(pendingActivities) { activity in
+                ForEach(content.pendingActivities) { activity in
                     PendingTradeActivityRow(
                         activity: activity,
                         isSelected: selectedFundCode == activity.code,
@@ -1269,17 +1274,7 @@ struct PopoverContentView: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: 72)
             } else {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 7) {
-                        ForEach(marketIndexQuotes) { quote in
-                            marketIndexCardButton(quote)
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 9)
-                }
-                .scrollIndicators(.hidden)
-                .frame(height: 86)
+                marketIndexCardStrip
             }
         }
         .padding(.top, 2)
@@ -1287,6 +1282,22 @@ struct PopoverContentView: View {
 
     private var marketIndexQuotes: [MarketIndexQuote] {
         marketIndexStore.orderedQuotes()
+    }
+
+    /// 大盘指数横向卡片区：原生 NSScrollView 承载（普通鼠标滚轮默认无法横向滚动，
+    /// 滚动条也难以点拖），在 scrollWheel 中把竖向滚轮增量映射为横向滚动，
+    /// 鼠标悬停在指数区域滚动滚轮即可左右浏览全部指数。
+    private var marketIndexCardStrip: some View {
+        MarketIndexNativeWheelStrip {
+            HStack(spacing: 7) {
+                ForEach(marketIndexQuotes) { quote in
+                    marketIndexCardButton(quote)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 9)
+        }
+        .frame(height: 86)
     }
 
     private var primaryMarketIndexQuote: MarketIndexQuote? {
@@ -2288,15 +2299,39 @@ struct PopoverContentView: View {
         return AnyShapeStyle(metricCardBaseBackground)
     }
 
+    /// 单次 body 求值内共享的列表派生数据。
+    /// `PendingTradeActivityBuilder.make(from:)` 需要全量扫描持仓与交易记录，
+    /// 一次 body 求值会被 header/toolbar/fundList 多处消费，因此只构建一次后透传。
+    private struct DerivedListContent {
+        let funds: [FundPosition]
+        let tradeRecords: [FundTradeRecord]
+        let pendingActivities: [PendingTradeActivity]
+
+        var pendingActivityIDs: [String] {
+            pendingActivities.map(\.id)
+        }
+
+        var pendingHeaderImpact: PendingHeaderImpact? {
+            PendingHeaderImpact.make(activities: pendingActivities)
+        }
+    }
+
+    private func makeDerivedListContent() -> DerivedListContent {
+        DerivedListContent(
+            funds: store.snapshot.funds,
+            tradeRecords: store.snapshot.tradeRecords ?? [],
+            pendingActivities: PendingTradeActivityBuilder.make(from: store.snapshot)
+        )
+    }
+
     /// 按当前筛选/排序得到的基金列表（供 fundRows 渲染）。
-    private var filteredFunds: [FundPosition] {
-        let records = tradeRecords
-        let funds = store.snapshot.funds.filter { fund in
+    private func filteredFunds(in content: DerivedListContent) -> [FundPosition] {
+        let funds = content.funds.filter { fund in
             switch filter {
             case .holding:
-                FundListDisplayRules.isDisplayedHolding(fund, tradeRecords: records)
+                FundListDisplayRules.isDisplayedHolding(fund, tradeRecords: content.tradeRecords)
             case .pending:
-                FundListDisplayRules.isDisplayedPending(fund, tradeRecords: records)
+                FundListDisplayRules.isDisplayedPending(fund, tradeRecords: content.tradeRecords)
             }
         }
 
@@ -2316,43 +2351,19 @@ struct PopoverContentView: View {
         return name.contains(query) || code.contains(query)
     }
 
-    private func count(for value: FundListFilter) -> Int {
+    private func count(for value: FundListFilter, in content: DerivedListContent) -> Int {
         switch value {
         case .holding:
-            let records = tradeRecords
-            return store.snapshot.funds.filter {
-                FundListDisplayRules.isDisplayedHolding($0, tradeRecords: records)
+            return content.funds.filter {
+                FundListDisplayRules.isDisplayedHolding($0, tradeRecords: content.tradeRecords)
             }.count
         case .pending:
-            return displayPendingCount
+            return content.pendingActivities.count
         }
-    }
-
-    private var displayPendingCount: Int {
-        pendingActivities.count
-    }
-
-    /// 待确认交易对持仓总额/收益的影响汇总（用于头部影响条）。
-    private var pendingHeaderImpact: PendingHeaderImpact? {
-        PendingHeaderImpact.make(activities: pendingActivities)
     }
 
     private var visibleFilters: [FundListFilter] {
         FundListFilter.allCases
-    }
-
-    private var tradeRecords: [FundTradeRecord] {
-        store.snapshot.tradeRecords ?? []
-    }
-
-    /// 当前待确认交易列表（供 pendingActivityList 渲染）。
-    private var pendingActivities: [PendingTradeActivity] {
-        PendingTradeActivityBuilder.make(from: store.snapshot)
-    }
-
-    /// 当前待确认交易的 ID 列表（用于驱动“已忽略提醒”持久化与归一化）。
-    private var pendingActivityIDs: [String] {
-        pendingActivities.map(\.id)
     }
 
     private var dismissedPendingActivityNoticeIDs: Set<String> {
@@ -2361,22 +2372,22 @@ struct PopoverContentView: View {
         )
     }
 
-    private var showsPendingActivityNotice: Bool {
+    private func showsPendingActivityNotice(_ content: DerivedListContent) -> Bool {
         PendingActivityNoticePolicy.shouldShow(
-            activityIDs: pendingActivityIDs,
+            activityIDs: content.pendingActivityIDs,
             dismissedActivityIDs: dismissedPendingActivityNoticeIDs
         )
     }
 
-    private func dismissPendingActivityNotice() {
+    private func dismissPendingActivityNotice(_ content: DerivedListContent) {
         dismissedPendingActivityNoticeIDsRawValue = PendingActivityNoticePolicy.encodeDismissedActivityIDs(
-            Set(pendingActivityIDs)
+            Set(content.pendingActivityIDs)
         )
     }
 
-    private func normalizePendingActivityNoticeDismissal() {
+    private func normalizePendingActivityNoticeDismissal(_ content: DerivedListContent) {
         let normalized = PendingActivityNoticePolicy.normalizedDismissedActivityIDs(
-            activityIDs: pendingActivityIDs,
+            activityIDs: content.pendingActivityIDs,
             dismissedActivityIDs: dismissedPendingActivityNoticeIDs
         )
         let rawValue = PendingActivityNoticePolicy.encodeDismissedActivityIDs(normalized)
@@ -2458,6 +2469,8 @@ struct PopoverContentView: View {
             try? await Task.sleep(nanoseconds: UInt64(remainingDisplayTime * 1_000_000_000))
         }
 
+        // 手动刷新完成：广播信号，通知详情页等子视图强制补充拉取（如十大重仓涨跌幅），绕过定时节流。
+        store.signalManualRefresh()
         isRefreshing = false
     }
 
@@ -2487,7 +2500,6 @@ private enum FundListFilter: String, CaseIterable, Identifiable {
 }
 
 enum FundSortMode: String, CaseIterable, Identifiable {
-    case custom
     case todayRate
     case costAmount
     case todayIncome
@@ -2500,8 +2512,6 @@ enum FundSortMode: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .custom:
-            "自定义"
         case .todayRate:
             "今日涨幅"
         case .costAmount:
@@ -2523,8 +2533,6 @@ enum FundSortMode: String, CaseIterable, Identifiable {
 enum FundListSorter {
     static func sort(_ funds: [FundPosition], mode: FundSortMode) -> [FundPosition] {
         switch mode {
-        case .custom:
-            return funds
         case .todayRate:
             return sortDescending(funds) { $0.todayRate }
         case .costAmount:
@@ -5483,7 +5491,7 @@ struct FundRowView: View {
             return compactUnsignedMoney(principal)
         case .todayTotal:
             return compactUnsignedMoney(rowHoldingAmount)
-        case .custom, .todayRate, .name:
+        case .todayRate, .name:
             return MoneyFormatter.percent(fund.todayRate, signed: true)
         }
     }
@@ -5498,7 +5506,7 @@ struct FundRowView: View {
             return rowHoldingRate ?? 0
         case .costAmount, .todayTotal:
             return 0
-        case .custom, .todayRate, .name:
+        case .todayRate, .name:
             return fund.todayRate
         }
     }
@@ -5507,7 +5515,7 @@ struct FundRowView: View {
         switch sortMode {
         case .todayIncome, .holdingIncome, .costAmount, .todayTotal:
             return 70
-        case .custom, .todayRate, .holdingRate, .name:
+        case .todayRate, .holdingRate, .name:
             return 60
         }
     }
@@ -5718,7 +5726,7 @@ struct FundDailyIncomePanelView: View {
     private let fundCode: String
     let onClose: () -> Void
 
-    @State private var supplement: FundDetailSupplement = .empty
+    @State private var netValueHistory: [FundNetValuePoint] = []
     @State private var isSupplementLoading = false
     @State private var didLoadSupplement = false
     @Environment(\.colorScheme) private var colorScheme
@@ -5772,7 +5780,7 @@ struct FundDailyIncomePanelView: View {
         }
         .background(PanelDesign.panelBackground)
         .task(id: fund.code) {
-            await loadSupplement()
+            await loadHistory()
         }
     }
 
@@ -5880,7 +5888,7 @@ struct FundDailyIncomePanelView: View {
     }
 
     private var sourceNetValuePoints: [FundNetValuePoint] {
-        supplement.history.isEmpty ? supplement.trend : supplement.history
+        netValueHistory
     }
 
     private var effectiveLots: [FundPositionLot] {
@@ -5905,11 +5913,10 @@ struct FundDailyIncomePanelView: View {
     }
 
     @MainActor
-    private func loadSupplement() async {
+    private func loadHistory() async {
         guard !isSupplementLoading else { return }
         isSupplementLoading = true
-        let next = await supplementService.fetchFundDetailSupplement(code: fund.code)
-        supplement = next
+        netValueHistory = await supplementService.fetchNetValueHistorySafely(code: fund.code)
         didLoadSupplement = true
         isSupplementLoading = false
     }
@@ -5955,6 +5962,14 @@ struct FundDetailView: View {
     @State private var supplement: FundDetailSupplement = .empty
     @State private var isSupplementLoading = false
     @State private var didLoadSupplement = false
+    /// 本只基金的实时数据本地镜像。详情页 body 只订阅这个 @State，而非整个
+    /// store.snapshot.funds——其他基金刷新不会带动本详情页 body 重算，行情刷新
+    /// 也只在「这一只」字段变化时才重算（落实「只订阅这一只基金需要的字段」）。
+    @State private var liveFund: FundPosition?
+    /// 已为「动态部分」重仓补充数据拉取过的「时点槽」，避免同一时点（如当日 15:00 后补充）
+    /// 在详情长开期间重复请求。静态部分（重仓名单/行业）由 store.staticHoldingsStillValid
+    /// 在季度窗口内控制，不在此去重。
+    @State private var fetchedSupplementSlots: Set<String> = []
     @State private var trendTab: FundDetailTrendTab = .intraday
     @State private var netValueTrendRange: FundNetValueTrendRange = .threeMonths
     @Environment(\.colorScheme) private var colorScheme
@@ -5986,7 +6001,8 @@ struct FundDetailView: View {
     }
 
     private var fund: FundPosition {
-        store.snapshot.funds.first { $0.code == fundCode } ?? unavailableRoutedFund(code: fundCode)
+        // 优先读本地镜像（body 因此只订阅 liveFund 这个 @State），避免直接订阅整个 snapshot。
+        liveFund ?? store.fund(code: fundCode) ?? unavailableRoutedFund(code: fundCode)
     }
 
     private var tradeRecords: [FundTradeRecord] {
@@ -6026,12 +6042,32 @@ struct FundDetailView: View {
             )
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
+                // 用 LazyVStack 替代 VStack：行情刷新导致整页 body 重算时，SwiftUI 只
+                // 构建/布局当前可视区的卡片，滑到重仓（或任何尾部区块）时，已滚出屏的
+                // 半透明大卡（盘中曲线）不再参与 layout 与合成，消除「滑到那段合成压力
+                // 突然上去」的顿挫。重仓/估值区块本身已加 .equatable() 隔离重建。
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    // 系统“始终显示滚动条”时仅靠 .scrollIndicators(.hidden) 可能压不住，
+                    // 借原生配置强制 overlay + autohide，滚动条不再常驻
+                    MainPopoverNativeScrollConfiguration()
+                        .frame(height: 0)
                     fundTitle
                     todayRateHero
                     pendingTradeSummary
                     metricsGrid
                     trendSection
+                    if trendTab == .intraday {
+                        FundDetailIntradayTail(
+                            estimationDevs: fund.estimationDeviationHistory ?? [],
+                            topHoldings: supplement.topHoldings,
+                            disclosureDate: supplement.holdingDisclosureDate,
+                            trackingIndexName: supplement.indexName,
+                            trackingIndexChangeRate: supplement.indexChangeRate,
+                            relatedKind: supplement.relatedKind,
+                            isHoldingsLoading: isSupplementLoading
+                        )
+                        .equatable()
+                    }
                 }
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)
@@ -6041,8 +6077,39 @@ struct FundDetailView: View {
             actionBar
         }
         .background(PanelDesign.panelBackground)
+        .onChange(of: store.snapshot.funds) { _, _ in
+            // 行情刷新时只同步「这一只」基金到本地镜像，不直接订阅整个 snapshot；
+            // 只有本只字段变化才会触发 body 重算，其他基金刷新不带动本详情页。
+            liveFund = store.fund(code: fundCode)
+        }
         .task(id: fund.code) {
+            // 进入详情先同步一次本只基金镜像，后续行情刷新由 onChange 增量更新。
+            liveFund = store.fund(code: fundCode)
+            // 先恢复已缓存的重仓数据，避免重开/切换基金时闪「暂无重仓数据」。
+            if let cached = store.cachedSupplement(for: fund.code) {
+                supplement = cached
+                didLoadSupplement = true
+            }
             await loadSupplement()
+            // 跨过目标时点（普通基金 15:00 / QDII 08:00）时自动补充一次重仓涨跌幅。
+            // 详情页关闭后 .task 自动取消，sleep 到点后不会执行，无需手动停止。
+            while !Task.isCancelled {
+                guard let target = Self.nextSupplementTargetTime(for: fund, now: .now) else { break }
+                let delay = target.timeIntervalSinceNow
+                guard delay > 0 else { break }
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(max(delay, 0) * 1_000_000_000))
+                } catch {
+                    break
+                }
+                await loadSupplement()
+            }
+        }
+        // 用户主动点击刷新（主面板手动刷新完成）时，无论当前是否交易时段，都强制补充拉取十大重仓涨跌幅。
+        .onChange(of: store.manualRefreshToken) { _, _ in
+            Task {
+                await loadSupplement(force: true)
+            }
         }
         .alert("删除基金", isPresented: $isDeleteConfirmationPresented) {
             Button("取消", role: .cancel) {}
@@ -6218,88 +6285,133 @@ struct FundDetailView: View {
         .overlay(PanelDesign.border(cornerRadius: 10))
     }
 
-    private var estimationAccuracySection: some View {
-        let devs = fund.estimationDeviationHistory ?? []
-        let buckets = Self.buckets(from: devs)
+    /// 估值准确率区块：抽成独立子 View 并遵循 Equatable，仅依赖 devs（历史估值偏差，与实时行情无关）。
+    /// 行情刷新导致外层 body 重算时输入未变即真正跳过 body，
+    /// 避免每次都重算 buckets（4 次 filter）与 4 个 GeometryReader 行，减轻滚动抽帧。
+    private struct EstimationAccuracySection: View, Equatable {
+        let devs: [EstimationDeviation]
 
-        return VStack(alignment: .leading, spacing: 10) {
-            sectionHeader(
-                "估值准确率",
-                trailing: "近 \(min(devs.count, 30)) 天 · \(devs.count) 个样本",
-                titleSupplement: estimationAverageDeviationText
-            )
+        /// 把最近 30 次估值记录按「与官方净值的绝对偏差」分为四个等级：
+        ///   ≤0.3% -> 准确   0.3~0.5% -> 轻微   0.5~1% -> 较大   >1% -> 严重。
+        private static func buckets(from devs: [EstimationDeviation]) -> [EstimationBucket] {
+            let low = devs.filter { $0.absoluteDeviation <= 0.3 }.count
+            let midLow = devs.filter { $0.absoluteDeviation > 0.3 && $0.absoluteDeviation <= 0.5 }.count
+            let midHigh = devs.filter { $0.absoluteDeviation > 0.5 && $0.absoluteDeviation <= 1 }.count
+            let high = devs.filter { $0.absoluteDeviation > 1 }.count
+            let accurate = Color(nsColor: StatusBarTone.menuBarColor(forRate: 1))
+            return [
+                EstimationBucket(label: "≤0.3%", count: low, color: accurate),
+                EstimationBucket(label: "0.3~0.5%", count: midLow, color: Color.yellow),
+                EstimationBucket(label: "0.5~1%", count: midHigh, color: Color.orange),
+                EstimationBucket(label: ">1%", count: high, color: Color.red)
+            ]
+        }
 
-            if devs.isEmpty {
-                Text("暂无足够数据。当日净值更新后将自动统计当日估值与实际涨跌幅的偏差，晚间即可查看。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                let maxCount = max(buckets.map(\.count).max() ?? 1, 1)
-                VStack(alignment: .leading, spacing: 9) {
-                    ForEach(buckets) { bucket in
-                        estimationBucketRow(bucket, maxCount: maxCount)
+        var body: some View {
+            let buckets = Self.buckets(from: devs)
+            return VStack(alignment: .leading, spacing: 10) {
+                sectionHeader(
+                    "估值准确率",
+                    trailing: "近 \(min(devs.count, 30)) 天 · \(devs.count) 个样本",
+                    titleSupplement: averageDeviationText
+                )
+
+                if devs.isEmpty {
+                    Text("暂无足够数据。当日净值更新后将自动统计当日估值与实际涨跌幅的偏差，晚间即可查看。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    let maxCount = max(buckets.map(\.count).max() ?? 1, 1)
+                    VStack(alignment: .leading, spacing: 9) {
+                        ForEach(buckets) { bucket in
+                            estimationBucketRow(bucket, maxCount: maxCount)
+                        }
                     }
                 }
             }
+            .padding(12)
+            .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(PanelDesign.border(cornerRadius: 10))
         }
-        .padding(12)
-        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(PanelDesign.border(cornerRadius: 10))
-    }
 
-    /// 标题栏「估值准确率」后面的小号灰色补注：平均偏差 ±X.XX%；无样本时为 nil。
-    private var estimationAverageDeviationText: String? {
-        let devs = fund.estimationDeviationHistory ?? []
-        guard !devs.isEmpty else { return nil }
-        let average = devs.map(\.absoluteDeviation).reduce(0, +) / Double(devs.count)
-        return "平均偏差 ±\(average.formatted(.number.precision(.fractionLength(2))))%"
-    }
+        private var averageDeviationText: String? {
+            guard !devs.isEmpty else { return nil }
+            let average = devs.map(\.absoluteDeviation).reduce(0, +) / Double(devs.count)
+            return "平均偏差 ±\(average.formatted(.number.precision(.fractionLength(2))))%"
+        }
 
-        /// 把最近 30 次估值记录按「与官方净值的绝对偏差」分为四个等级：
-    ///   ≤0.3% -> 准确   0.3~0.5% -> 轻微   0.5~1% -> 较大   >1% -> 严重。
-    /// 颜色条长度按占比显示，辅以「N 次」。
-    private static func buckets(from devs: [EstimationDeviation]) -> [EstimationBucket] {
-        let low = devs.filter { $0.absoluteDeviation <= 0.3 }.count
-        let midLow = devs.filter { $0.absoluteDeviation > 0.3 && $0.absoluteDeviation <= 0.5 }.count
-        let midHigh = devs.filter { $0.absoluteDeviation > 0.5 && $0.absoluteDeviation <= 1 }.count
-        let high = devs.filter { $0.absoluteDeviation > 1 }.count
-        let accurate = Color(nsColor: StatusBarTone.menuBarColor(forRate: 1))
-        return [
-            EstimationBucket(label: "≤0.3%", count: low, color: accurate),
-            EstimationBucket(label: "0.3~0.5%", count: midLow, color: Color.yellow),
-            EstimationBucket(label: "0.5~1%", count: midHigh, color: Color.orange),
-            EstimationBucket(label: ">1%", count: high, color: Color.red)
-        ]
-    }
-
-    /// 单条分桶横条（避免在大 body 内写复杂表达式导致编译超时）。
-    private func estimationBucketRow(_ bucket: EstimationBucket, maxCount: Int) -> some View {
-        let ratio = maxCount > 0 ? CGFloat(bucket.count) / CGFloat(maxCount) : 0
-        return HStack(spacing: 8) {
-            Text(bucket.label)
-                .font(.system(size: 10, weight: .medium))
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-                .frame(width: 64, alignment: .leading)
-
-            GeometryReader { geo in
-                Capsule()
-                    .fill(bucket.color)
-                    .frame(
-                        width: max(geo.size.width * ratio, bucket.count > 0 ? 6 : 0),
-                        height: 9,
-                        alignment: .leading
-                    )
+        private func sectionHeader(
+            _ title: String,
+            trailing: String? = nil,
+            showsLoading: Bool = false,
+            titleSupplement: String? = nil
+        ) -> some View {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                if let titleSupplement {
+                    Text(titleSupplement)
+                        .font(.system(size: 10, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let trailing {
+                    Text(trailing)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                if showsLoading {
+                    ProgressView().controlSize(.small).scaleEffect(0.6)
+                }
             }
-            .frame(height: 9)
-
-            Text("\(bucket.count)次")
-                .font(.system(size: 10, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(bucket.count > 0 ? Color.primary : Color.secondary)
         }
+
+        private func estimationBucketRow(_ bucket: EstimationBucket, maxCount: Int) -> some View {
+            let ratio = maxCount > 0 ? CGFloat(bucket.count) / CGFloat(maxCount) : 0
+            return HStack(spacing: 8) {
+                Text(bucket.label)
+                    .font(.system(size: 10, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(width: 64, alignment: .leading)
+
+                // Canvas 单趟同步绘制，替代 GeometryReader 的两段式布局，
+                // 滚动经过时不再触发额外的布局求解。
+                Canvas { context, size in
+                    let barWidth = min(
+                        max(size.width * ratio, bucket.count > 0 ? 6 : 0),
+                        size.width
+                    )
+                    let barRect = CGRect(
+                        x: 0,
+                        y: (size.height - 9) / 2,
+                        width: barWidth,
+                        height: 9
+                    )
+                    context.fill(
+                        Path(roundedRect: barRect, cornerRadius: 4.5),
+                        with: .color(bucket.color)
+                    )
+                }
+                .frame(height: 9)
+
+                Text("\(bucket.count)次")
+                    .font(.system(size: 10, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(bucket.count > 0 ? Color.primary : Color.secondary)
+            }
+        }
+    }
+
+    private var estimationAccuracySection: some View {
+        // `Equatable` conformance alone does not activate SwiftUI's equality
+        // shortcut.  Apply it explicitly so quote updates while scrolling do
+        // not re-layout this static section.
+        EstimationAccuracySection(devs: fund.estimationDeviationHistory ?? [])
+            .equatable()
     }
 
     private var intradayTrendContent: some View {
@@ -6314,14 +6426,8 @@ struct FundDetailView: View {
                     .frame(height: 116)
             } else {
                 FundIntradayRateChart(points: visibleIntradayRatePoints)
+                    .equatable()
                     .frame(height: 138)
-            }
-
-            estimationAccuracySection
-
-            if !supplement.topHoldings.isEmpty || isSupplementLoading {
-                Divider().opacity(0.45)
-                topHoldingsList
             }
         }
     }
@@ -6343,6 +6449,7 @@ struct FundDetailView: View {
                 let holdingCost = fund.migratedCost
                 let holdingCostPoint = (holdingCost ?? 0) > 0 ? latestNetValuePoint : nil
                 FundTrendMiniChart(points: trendPoints, holdingCost: holdingCost, holdingCostPoint: holdingCostPoint)
+                    .equatable()
                     .frame(height: 116)
             } else {
                 emptySupplementView(isSupplementLoading ? "走势加载中..." : "暂无走势数据")
@@ -6421,18 +6528,138 @@ struct FundDetailView: View {
         }
     }
 
-    private var topHoldingsList: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("前10重仓股", trailing: topHoldingsTrailingText, showsLoading: isSupplementLoading)
+    /// 前10重仓股：抽成独立子 View 并遵循 Equatable，仅依赖 topHoldings 数组本身。
+    /// 行情刷新导致外层 body 重算时输入未变即真正跳过重建
+    /// （不遵循 Equatable 时 SwiftUI 仍会重跑 body），
+    /// 避免打开/刷新瞬间滚动详情页时整列 10 行重仓股重建导致抽帧。
+    /// 详情页尾部：估值准确率与前10重仓各自独立成卡，与盘中曲线的大卡分离。
+    /// 滑到尾部时不再与曲线、半透明大底同屏叠加合成；整体遵循 Equatable，
+    /// 且 isHoldingsLoading 有意不参与相等判断——净值历史等动态请求短暂置位
+    /// 加载态时，未变化的重仓/估值区块不会整列重建（打开详情后下滑抽帧的主因）。
+    private struct FundDetailIntradayTail: View, Equatable {
+        let estimationDevs: [EstimationDeviation]
+        let topHoldings: [FundStockHolding]
+        let disclosureDate: String?
+        let trackingIndexName: String?
+        let trackingIndexChangeRate: Double?
+        /// 关联标的种类："etf" / "index"（决定卡片前缀文案）。
+        let relatedKind: String?
+        let isHoldingsLoading: Bool
 
-            if supplement.topHoldings.isEmpty {
-                emptySupplementView(isSupplementLoading ? "重仓加载中..." : "暂无重仓数据")
-                    .frame(height: 64)
-            } else {
+        nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.estimationDevs == rhs.estimationDevs
+                && lhs.topHoldings == rhs.topHoldings
+                && lhs.disclosureDate == rhs.disclosureDate
+                && lhs.trackingIndexName == rhs.trackingIndexName
+                && lhs.trackingIndexChangeRate == rhs.trackingIndexChangeRate
+                && lhs.relatedKind == rhs.relatedKind
+        }
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 12) {
+                EstimationAccuracySection(devs: estimationDevs)
+
+                if topHoldings.isEmpty {
+                    if let trackingIndexName {
+                        trackingIndexCard(name: trackingIndexName)
+                    } else if isHoldingsLoading {
+                        // 仍在拉取重仓/关联标的数据：保留加载占位，避免打开瞬间的空白跳动。
+                        holdingsPlaceholderCard
+                    }
+                    // 加载完成且既无前十大重仓、也无关联场内ETF/跟踪指数（如 001235、
+                    // 006331 这类纯主动品种）：整块不展示，避免无意义的占位卡片。
+                } else {
+                    TopHoldingsSection(
+                        topHoldings: topHoldings,
+                        disclosureDate: disclosureDate
+                    )
+                    .padding(12)
+                    .background(
+                        PanelDesign.cardBackground,
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    )
+                    .overlay(PanelDesign.border(cornerRadius: 10))
+                }
+            }
+        }
+
+        /// 跟踪指数卡片：仅「无前十大重仓」的品种（场内 ETF、商品基金等）展示，
+        /// 其当日涨跌与关联指数高度联动，单独成卡直观呈现实时涨跌。
+        private func trackingIndexCard(name: String) -> some View {
+            HStack(spacing: 8) {
+                Image(systemName: "chart.line.uptrend.xyaxis")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                Text(relatedKind == "etf" ? "关联ETF · \(name)" : "跟踪指数 · \(name)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                if let changeRate = trackingIndexChangeRate {
+                    Text(MoneyFormatter.percent(changeRate, signed: true))
+                        .font(.system(size: 10, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(toneColor(for: changeRate))
+                        .padding(.horizontal, 6)
+                        .frame(height: 18)
+                        .background(toneColor(for: changeRate).opacity(0.10), in: Capsule())
+                }
+            }
+            .padding(12)
+            .frame(minHeight: 44)
+            .background(
+                PanelDesign.cardBackground,
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .overlay(PanelDesign.border(cornerRadius: 10))
+        }
+
+        /// 首次打开且尚无任何重仓/指数数据时的占位卡片。
+        private var holdingsPlaceholderCard: some View {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.6)
+                    .opacity(isHoldingsLoading ? 1 : 0)
+                Text(isHoldingsLoading ? "重仓数据加载中…" : "暂无重仓数据")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(12)
+            .frame(minHeight: 56)
+            .background(
+                PanelDesign.cardBackground,
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .overlay(PanelDesign.border(cornerRadius: 10))
+        }
+    }
+
+    private struct TopHoldingsSection: View, Equatable {
+        let topHoldings: [FundStockHolding]
+        let disclosureDate: String?
+        // 注意：不接收 isLoading——净值历史等动态请求会短暂置位加载态，
+        // 若参与相等判断会让未变化的重仓整列重建（打开详情下滑抽帧的来源之一）；
+        // 加载占位由 FundDetailIntradayTail 统一承担。
+        // 跟踪指数同样不在此展示：仅「无重仓」的品种需要，由 Tail 独立成卡。
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 8) {
+                let trailing: String? = topHoldings.isEmpty ? nil : {
+                    if let date = disclosureDate {
+                        return "\(topHoldings.count)只 · \(date)"
+                    }
+                    return "\(topHoldings.count)只"
+                }()
+                sectionHeader("前10重仓股", trailing: trailing)
+
                 VStack(spacing: 0) {
-                    ForEach(Array(supplement.topHoldings.enumerated()), id: \.offset) { index, holding in
+                    ForEach(Array(topHoldings.enumerated()), id: \.element.code) { index, holding in
                         stockHoldingRow(holding, rank: index + 1)
-                        if index < supplement.topHoldings.count - 1 {
+                        if index < topHoldings.count - 1 {
                             Divider()
                                 .opacity(0.55)
                         }
@@ -6440,6 +6667,74 @@ struct FundDetailView: View {
                 }
             }
         }
+
+        private func sectionHeader(_ title: String, trailing: String?) -> some View {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                if let trailing {
+                    Text(trailing)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+
+        /// 单行重仓股：排名 + 名称（代码·行业）+ 实时涨跌胶囊 + 占比。
+
+        private func stockHoldingRow(_ holding: FundStockHolding, rank: Int) -> some View {
+            HStack(spacing: 8) {
+                Text("\(rank)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, alignment: .leading)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(holding.name.isEmpty ? holding.code : holding.name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                    if let detail = stockHoldingDetailText(holding) {
+                        Text(detail)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                if let changeRate = holding.changeRate {
+                    Text(MoneyFormatter.percent(changeRate, signed: true))
+                        .font(.system(size: 10, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(toneColor(for: changeRate))
+                        .padding(.horizontal, 6)
+                        .frame(height: 18)
+                        .background(toneColor(for: changeRate).opacity(0.10), in: Capsule())
+                }
+
+                Text(holding.weight.isEmpty ? "--" : holding.weight)
+                    .font(.system(size: 10, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(width: 48, alignment: .trailing)
+            }
+            .frame(height: 38)
+        }
+
+        private func stockHoldingDetailText(_ holding: FundStockHolding) -> String? {
+            var parts: [String] = []
+            if !holding.code.isEmpty {
+                parts.append(holding.code)
+            }
+            if let industryName = holding.industryName, !industryName.isEmpty {
+                parts.append(industryName)
+            }
+            if parts.isEmpty { return nil }
+            return parts.joined(separator: " · ")
+        }
+
     }
 
     private var actionBar: some View {
@@ -6919,14 +7214,6 @@ struct FundDetailView: View {
         ]
     }
 
-    private var topHoldingsTrailingText: String? {
-        guard !supplement.topHoldings.isEmpty else { return nil }
-        guard let date = supplement.holdingDisclosureDate else {
-            return "\(supplement.topHoldings.count)只"
-        }
-        return "\(supplement.topHoldings.count)只 · \(date)"
-    }
-
     private var intradayRatePoints: [FundIntradayRatePoint] {
         FundIntradayRateHistoryRecorder.activePoints(for: fund)
     }
@@ -7040,39 +7327,233 @@ struct FundDetailView: View {
 
     private func dateText(_ timestamp: Int64, format: String) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000)
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = format
-        return formatter.string(from: date)
+        return FundDetailDateFormatting.string(from: date, format: format)
     }
 
     private func parseFundDateText(_ text: String) -> Date? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 11 else { return nil }
 
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.locale = Locale(identifier: "zh_CN")
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-
+        let calendar = FundDetailDateFormatting.gregorianCalendar()
         let year = calendar.component(.year, from: .now)
         let fullText = "\(year)-\(trimmed)"
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.timeZone = calendar.timeZone
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return formatter.date(from: fullText)
+        return FundDetailDateFormatting.date(
+            from: fullText,
+            format: "yyyy-MM-dd HH:mm",
+            calendar: calendar
+        )
     }
 
     @MainActor
-    private func loadSupplement() async {
+    private func loadSupplement(force: Bool = false) async {
         guard !isSupplementLoading else { return }
+
+        // 静态部分（十大重仓股名单/占比/相关行业）按季度披露日变化，两次报告之间基本不变。
+        // 披露日仍有效（且非强制刷新）时跳过这部分请求，直接复用缓存，显著减少重仓接口调用。
+        let staticStillValid = !force && store.staticHoldingsStillValid(for: fund.code)
+
+        // 动态部分（净值走势、资产配置、重仓股当日涨跌幅）按交易时段节流；force 时跳过门控。
+        let dynamicSlot: String? = force
+            ? "manual-\(DateOnlyFormatter.string(from: .now))"
+            : Self.supplementRefreshSlot(for: fund, now: .now)
+
+        // 重仓股涨跌幅过期检测：盘后保留的涨跌幅若来自「今天之前」的交易日（例如昨天盘后
+        // 拉到、今天尚未触发新的 after15 补拉），则需强制重新拉一次当日值，避免详情页一直
+        // 展示上一交易日的重仓股涨跌（紫金矿业-0.58% vs 同花顺-2.40% 即此 bug）。
+        let todayKey = DateOnlyFormatter.string(from: .now)
+        let holdingsStaleForToday = !force
+            && !supplement.topHoldings.isEmpty
+            && supplement.topHoldingsChangeDate != todayKey
+            && TradingCalendar.isFundTradingDay(.now)
+
+        // 无前十大重仓的品种（ETF 联接/商品/债券等）需刷新「关联标的」（场内 ETF 或跟踪指数），
+        // 优先级应覆盖静态披露日短路：否则盘前/非交易时段 staticStillValid 直接 return，
+        // 界面会一直停留在磁盘缓存里的旧关联标的（如 004253 展示跟踪指数而非场内 518800）。
+        let trackIndexPending = supplement.topHoldings.isEmpty
+
+        guard !staticStillValid || dynamicSlot != nil || holdingsStaleForToday || trackIndexPending else { return }
+        // 涨跌幅过期时，即便 today 的 after15 槽已拉过，也允许在「非交易时段」补拉一次当日值。
+        let dynamicSlotEffective = (dynamicSlot ?? (holdingsStaleForToday ? "stale-\(todayKey)" : nil))
+        let dynamicPending = dynamicSlotEffective != nil
+            && fetchedSupplementSlots.contains("dynamic-\(dynamicSlotEffective!)") == false
+
+        guard !staticStillValid || dynamicPending || trackIndexPending else { return }
+        if !dynamicPending, staticStillValid, trackIndexPending {
+            // 仅需刷新跟踪指数：跳过静态/动态重拉，也不登记槽位。
+            await refreshTrackIndexOnly()
+            return
+        }
+        guard fetchedSupplementSlots.contains("dynamic-\(dynamicSlotEffective ?? "")") == false else { return }
+
         isSupplementLoading = true
-        let next = await supplementService.fetchFundDetailSupplement(code: fund.code)
-        supplement = next
+        defer { isSupplementLoading = false }
+
+        // 拉取静态部分（重仓名单/占比/行业）：仅在缺失、披露日过期或强制刷新时。
+        // 注意：此处不做 fetchedSupplementSlots 去重——静态部分由 store.staticHoldingsStillValid
+        // 控制（季度末起的窗口内会持续尝试，直到拉到最新报告日才稳定），否则会漏掉窗口内
+        // 新披露的定期报告。
+        var merged = supplement
+        if !staticStillValid {
+            let position = await supplementService.fetchPositionSupplementSafely(code: fund.code)
+            let industry = await supplementService.fetchSectorAllocationSafely(
+                code: fund.code,
+                date: position.holdingDisclosureDate
+            )
+            merged.topHoldings = position.topHoldings
+            merged.relatedSectors = position.relatedSectors
+            merged.holdingDisclosureDate = position.holdingDisclosureDate
+            merged.industryAllocation = industry
+            merged.industryDisclosureDate = industry.first?.date
+        }
+
+        // 拉取动态部分（净值走势 + 资产配置 + 重仓股当日涨跌幅）。
+        if let dynamicSlotEffective, !fetchedSupplementSlots.contains("dynamic-\(dynamicSlotEffective)") {
+            async let history = supplementService.fetchNetValueHistorySafely(code: fund.code)
+            async let asset = supplementService.fetchAssetAllocationSafely(code: fund.code)
+            let (historyPoints, assetItems) = await (history, asset)
+            merged.history = historyPoints
+            merged.trend = historyPoints
+            merged.assetAllocation = assetItems
+            merged.assetAllocationDate = assetItems.first?.date
+            merged.yesterdayPoint = FundQuoteService.yesterdayNetValuePoint(from: historyPoints, now: .now)
+            fetchedSupplementSlots.insert("dynamic-\(dynamicSlotEffective)")
+
+            // 重仓股当日涨跌幅：静态名单有效但涨跌幅来自更早交易日时（holdingsStaleForToday），
+            // 名单不会重新拉取，需单独用腾讯接口刷新各股当日涨跌幅，并打上今日日期。
+            if !merged.topHoldings.isEmpty {
+                if let changes = try? await supplementService.fetchStockChanges(for: merged.topHoldings.map(\.code)) {
+                    merged.topHoldings = merged.topHoldings.map { holding in
+                        var next = holding
+                        if let rate = changes[holding.code] {
+                            next.changeRate = rate
+                        }
+                        return next
+                    }
+                }
+                merged.topHoldingsChangeDate = todayKey
+            }
+        }
+
+        // 跟踪指数：仅「无前十大重仓」的品种需要（典型如场内 ETF、商品基金）。
+        // 刻意放在动态槽位之外：涨跌幅要跟随行情保持新鲜（跨过 15:00 后切换收盘口径），
+        // 并自愈旧版本缓存的费率脏值；频率仍受 .task 时点循环与手动刷新约束。
+        await applyTrackIndexIfApplicable(to: &merged)
+
+        supplement = merged
+        store.cacheSupplement(supplement, for: fund.code)
         didLoadSupplement = true
-        isSupplementLoading = false
     }
+
+    /// 仅刷新跟踪指数的轻量路径（静态/动态均无需重拉时）。
+    @MainActor
+    private func refreshTrackIndexOnly() async {
+        var merged = supplement
+        await applyTrackIndexIfApplicable(to: &merged)
+        guard merged != supplement else { return }
+        supplement = merged
+        store.cacheSupplement(supplement, for: fund.code)
+    }
+
+    /// 刷新「关联标的」：仅对无前十大重仓的品种生效。优先级：① 关联场内 ETF；② 跟踪指数。
+    /// 避免展示分支在「重仓卡 ↔ 指数卡」之间抖动。
+    @MainActor
+    private func applyTrackIndexIfApplicable(to merged: inout FundDetailSupplement) async {
+        if !merged.topHoldings.isEmpty {
+            merged.indexCode = nil
+            merged.indexName = nil
+            merged.indexChangeRate = nil
+            merged.relatedKind = nil
+            return
+        }
+
+        // 关联场内 ETF 字段（linkedETFCode）来自持仓接口，但持仓拉取受 staticStillValid
+        // 控制：盘后季报已披露时静态部分会被跳过，导致 linkedETFCode 为空、直接退回跟踪指数。
+        // 此处若尚未获取（且走关联标的路径），补拉一次持仓接口仅取 etfCode/etfName，
+        // 确保 004253 → 518800 这类场内 ETF 映射不被漏掉（优先于跟踪指数）。
+        if merged.linkedETFCode?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+            let position = await supplementService.fetchPositionSupplementSafely(code: fund.code)
+            merged.linkedETFCode = position.linkedETFCode
+            merged.linkedETFName = position.linkedETFName
+        }
+
+        // ① 关联场内 ETF：ETF 联接基金持有的目标基金，市价实时涨跌最贴近净值，
+        //    腾讯实时通道直接覆盖（如 000216 → 518880 黄金ETF华安）。
+        if let etfCode = merged.linkedETFCode?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+           !etfCode.isEmpty,
+           etfCode.range(of: "^\\d{6}$", options: .regularExpression) != nil,
+           let etfRate = await supplementService.fetchRealtimeChangeRateSafely(code: etfCode) {
+            if merged.indexCode != etfCode { merged.indexCode = etfCode }
+            let trimmedETFName = merged.linkedETFName?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let etfName = (trimmedETFName?.isEmpty == false) ? trimmedETFName! : "场内ETF"
+            if merged.indexName != etfName { merged.indexName = etfName }
+            if merged.indexChangeRate != etfRate { merged.indexChangeRate = etfRate }
+            if merged.relatedKind != "etf" { merged.relatedKind = "etf" }
+            return
+        }
+
+        // ② 跟踪指数：腾讯实时通道 → 东财日K兜底；上金所现货（AU9999 等）两者均拿不到时，
+        //    用基础信息接口的 RATE（即跟踪标的当日涨跌幅）兜底。
+        guard let track = await supplementService.fetchTrackIndexSafely(code: fund.code) else {
+            // 既无关联场内 ETF，也无跟踪指数（如 001235 / 006331 这类纯主动或特殊品种）：
+            // 显式清空关联标的字段，避免旧缓存脏值（如历史遗留的 indexName/changeRate）
+            // 残留展示出「无名称却带涨跌幅」的怪异卡片。
+            merged.indexCode = nil
+            merged.indexName = nil
+            merged.indexChangeRate = nil
+            merged.relatedKind = nil
+            return
+        }
+        if merged.indexCode != track.code { merged.indexCode = track.code }
+        if merged.indexName != track.name { merged.indexName = track.name }
+        if merged.relatedKind != "index" { merged.relatedKind = "index" }
+        let rate = await supplementService.fetchRealtimeChangeRateSafely(code: track.code) ?? track.rate
+        if merged.indexChangeRate != rate { merged.indexChangeRate = rate }
+    }
+
+    /// 当前时刻是否应拉取「重仓补充数据」的时点槽；返回 nil 表示此刻不应请求。
+    /// - 非交易日：不请求（重仓股为静态数据）。
+    /// - 普通基金：交易时段内（开市）→ intraday 槽；15:00 之后 → after15 槽（补充当日涨跌幅，最多一次）；其余（盘前/午休/深夜）→ nil。
+    /// - QDII：北京时间 08:00 之后 → qdii8 槽（海外净值/涨跌在早上公布，每日更新一次）；其余 → nil。
+    private static func supplementRefreshSlot(for fund: FundPosition, now: Date) -> String? {
+        guard TradingCalendar.isFundTradingDay(now) else { return nil }
+        let cal = supplementChinaCalendar
+        let hour = cal.component(.hour, from: now)
+        let dayKey = DateOnlyFormatter.string(from: now)
+        if fund.fundType == .qdii {
+            return hour >= 8 ? "\(dayKey)-qdii-8" : nil
+        }
+        if TradingCalendar.marketSessionState(now: now) == .open {
+            return "\(dayKey)-intraday"
+        }
+        if hour >= 15 {
+            return "\(dayKey)-after15"
+        }
+        return nil
+    }
+
+    /// 下一个需要补充重仓数据的目标时刻（普通基金 15:00 / QDII 08:00），取未来最近的一个基金交易日对应时点。
+    private static func nextSupplementTargetTime(for fund: FundPosition, now: Date) -> Date? {
+        let cal = supplementChinaCalendar
+        let targetHour = fund.fundType == .qdii ? 8 : 15
+        var day = cal.startOfDay(for: now)
+        for _ in 0..<366 {
+            if TradingCalendar.isFundTradingDay(day),
+               let target = cal.date(bySettingHour: targetHour, minute: 0, second: 0, of: day),
+               target > now {
+                return target
+            }
+            day = cal.date(byAdding: .day, value: 1, to: day) ?? day
+        }
+        return nil
+    }
+
+    private static let supplementChinaCalendar: Calendar = {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        return cal
+    }()
 }
 
 private enum TradeRecordFilter: String, CaseIterable, Identifiable {
@@ -7533,11 +8014,18 @@ struct FundTradeRecordsPanelView: View {
     }
 }
 
-private struct FundIntradayRateChart: View {
+/// 遵循 Equatable：父级重算而点位未变时跳过 body，避免滚动中重建折线 Path。
+private struct FundIntradayRateChart: View, Equatable {
     let points: [FundIntradayRatePoint]
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var hoveredIndex: Int?
+
+    // @State 会阻止 Equatable 自动合成，手动只比较数据输入；
+    // 悬停状态/配色变化各自拥有独立的重渲染机制，不依赖父级失效。
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.points == rhs.points
+    }
 
     private static let chinaTimeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
 
@@ -7895,13 +8383,21 @@ private struct FundIntradayRateChart: View {
 }
 
 /// 净值业绩走势图。仅展示一条持仓成本参考线（及成本点位），不再叠加多笔购入标记。
-private struct FundTrendMiniChart: View {
+/// 遵循 Equatable：父级重算而走势数据未变时跳过 body。
+private struct FundTrendMiniChart: View, Equatable {
     let points: [FundNetValuePoint]
     let holdingCost: Double?
     let holdingCostPoint: FundNetValuePoint?
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var hoveredIndex: Int?
+
+    // 同 FundIntradayRateChart：手动只比较数据输入
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.points == rhs.points
+            && lhs.holdingCost == rhs.holdingCost
+            && lhs.holdingCostPoint == rhs.holdingCostPoint
+    }
 
     var body: some View {
         VStack(spacing: 6) {
@@ -8169,10 +8665,7 @@ private struct FundTrendMiniChart: View {
     private func dateText(_ timestamp: Int64?) -> String {
         guard let timestamp else { return "--" }
         let date = Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000)
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "MM-dd"
-        return formatter.string(from: date)
+        return FundDetailDateFormatting.string(from: date, format: "MM-dd")
     }
 
     private func dateOnlyText(_ timestamp: Int64) -> String {
@@ -8186,6 +8679,120 @@ private struct FundTrendMiniChart: View {
 }
 
 let panelBorderColor = Color(nsColor: .separatorColor).opacity(0.12)
+
+/// 详情页时间文本的格式化缓存。
+/// DateFormatter 初始化涉及 ICU 设置，开销较大；走势图悬停等高频路径
+/// 每次移动都会触发格式化，必须复用实例。
+@MainActor
+private enum FundDetailDateFormatting {
+    static let chinaLocale = Locale(identifier: "zh_CN")
+    static let chinaTimeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+
+    private static var formattersByFormat: [String: DateFormatter] = [:]
+
+    /// 按dateFormat复用DateFormatter实例。
+    private static func formatter(for format: String) -> DateFormatter {
+        if let cached = formattersByFormat[format] { return cached }
+        let formatter = DateFormatter()
+        formatter.locale = chinaLocale
+        formatter.timeZone = chinaTimeZone
+        formatter.dateFormat = format
+        formattersByFormat[format] = formatter
+        return formatter
+    }
+
+    /// 格式化时间戳文本（如 "yyyy-MM-dd"、"HH:mm"）。
+    static func string(from date: Date, format: String) -> String {
+        formatter(for: format).string(from: date)
+    }
+
+    /// 解析时间文本；calendar 仅影响解析所用的年月日基准。
+    static func date(from text: String, format: String, calendar: Calendar) -> Date? {
+        let cachedFormatter = formatter(for: format)
+        cachedFormatter.calendar = calendar
+        cachedFormatter.timeZone = calendar.timeZone
+        return cachedFormatter.date(from: text)
+    }
+
+    /// 中国时区的公历日历（用于按本地交易日取年份等场景）。
+    static func gregorianCalendar() -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = chinaLocale
+        calendar.timeZone = chinaTimeZone
+        return calendar
+    }
+}
+
+/// 大盘指数横向卡片的原生滚动容器：NSScrollView 承载内容（无可见滚动条），
+/// 并在 scrollWheel 中把竖向滚轮增量映射为横向滚动，
+/// 不依赖应用激活状态，普通鼠标与触控板都能稳定浏览全部指数。
+private struct MarketIndexNativeWheelStrip<Content: View>: NSViewRepresentable {
+    @ViewBuilder let content: () -> Content
+
+    func makeNSView(context: Context) -> HorizontalWheelScrollView {
+        let scrollView = HorizontalWheelScrollView()
+        scrollView.drawsBackground = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.hasVerticalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.horizontalScrollElasticity = .allowed
+        scrollView.verticalScrollElasticity = .none
+        // 关键：避免 NSScrollView 自行按主轴线判定滚动方向而吞掉纵向滚轮事件，
+        // 全部交给 scrollWheel 手动映射为横向滚动。
+        scrollView.usesPredominantAxisScrolling = false
+
+        let hosting = PanelFocusAppearance.hostingView(content())
+        hosting.translatesAutoresizingMaskIntoConstraints = true
+        scrollView.documentView = hosting
+        scrollView.resizeDocumentViewToFitContent()
+        return scrollView
+    }
+
+    func updateNSView(_ nsView: HorizontalWheelScrollView, context: Context) {
+        guard let hosting = nsView.documentView as? NSHostingView<AnyView> else { return }
+        hosting.rootView = PanelFocusAppearance.suppressedRoot(content())
+        // 内容数量/宽度可能随行情数据变化，重新量取并保持当前阅读位置
+        hosting.invalidateIntrinsicContentSize()
+        nsView.resizeDocumentViewToFitContent()
+    }
+
+    final class HorizontalWheelScrollView: NSScrollView {
+        /// 依据内容固有尺寸调整 documentView 尺寸（宽度不足时撑满可视区）。
+        func resizeDocumentViewToFitContent() {
+            guard let hosting = documentView as? NSHostingView<AnyView> else { return }
+            hosting.layoutSubtreeIfNeeded()
+            // NSHostingView 的 fittingSize 不可靠（常为 0），改用 intrinsicContentSize。
+            let intrinsic = hosting.intrinsicContentSize
+            let width = max(intrinsic.width, bounds.width)
+            let height = max(intrinsic.height, bounds.height)
+            hosting.frame = NSRect(x: 0, y: 0,  width: width, height: height)
+        }
+
+        /// 竖向滚轮（普通鼠标）按横向处理；触控板横扫走同一映射，方向与系统习惯一致。
+        override func scrollWheel(with event: NSEvent) {
+            guard let doc = documentView else {
+                super.scrollWheel(with: event)
+                return
+            }
+            let deltaX = event.scrollingDeltaX
+            let deltaY = event.scrollingDeltaY
+            // 滚动速度放大，让普通鼠标滚轮也能较快浏览全部指数。
+            let scrollSpeed: CGFloat = 6.0
+            let dominantDelta = (abs(deltaX) >= abs(deltaY) ? deltaX : deltaY) * scrollSpeed
+            guard dominantDelta != 0 else { return }
+
+            let clipView = contentView
+            let clipWidth = clipView.bounds.width
+            let maxX = max(0, doc.frame.width - clipWidth)
+            guard maxX > 0 else {
+                super.scrollWheel(with: event)
+                return
+            }
+            let newX = min(max(clipView.bounds.origin.x - dominantDelta, 0), maxX)
+            clipView.bounds.origin.x = newX
+        }
+    }
+}
 
 private func toneColor(for value: Double) -> Color {
     if value > 0 { return Color(red: 239 / 255, green: 77 / 255, blue: 98 / 255) }
@@ -8290,14 +8897,17 @@ private struct MainPopoverNativeScrollConfiguration: NSViewRepresentable {
         NativeScrollConfigurationView(frame: .zero)
     }
 
+    // 有意留空：绑定为幂等操作，且已在 superview/window 变化时触发；
+    // 父视图每次重算都重入会反复拆装 observer/timer，滚动时放大主线程开销。
     @MainActor
-    func updateNSView(_ view: NativeScrollConfigurationView, context: Context) {
-        view.configureEnclosingScrollView()
-    }
+    func updateNSView(_ view: NativeScrollConfigurationView, context: Context) {}
 }
 
 @MainActor
 private final class NativeScrollConfigurationView: NSView {
+    private var hideTimer: Timer?
+    private weak var observedScrollView: NSScrollView?
+
     override func viewDidMoveToSuperview() {
         super.viewDidMoveToSuperview()
         configureEnclosingScrollView()
@@ -8309,20 +8919,88 @@ private final class NativeScrollConfigurationView: NSView {
     }
 
     func configureEnclosingScrollView() {
-        var ancestor = superview
-        while let current = ancestor {
-            if let scrollView = current as? NSScrollView {
-                scrollView.drawsBackground = false
-                scrollView.hasVerticalScroller = true
-                scrollView.hasHorizontalScroller = false
-                scrollView.autohidesScrollers = true
-                scrollView.scrollerStyle = .overlay
-                scrollView.scrollerInsets = NSEdgeInsets(top: 7, left: 0, bottom: 7, right: 2)
-                scrollView.verticalScroller?.controlSize = .small
-                scrollView.verticalScroller?.knobStyle = .default
-                return
+        // 幂等：已绑定同一 ScrollView 时直接返回，避免重复拆装 observer/timer。
+        let enclosing = superview?.enclosingScrollView
+        if let observedScrollView, observedScrollView === enclosing {
+            return
+        }
+
+        // 切换绑定时先注销旧监听并停掉淡出计时，避免泄漏与重复回调。
+        if let prev = observedScrollView {
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSView.boundsDidChangeNotification,
+                object: prev.contentView
+            )
+        }
+        hideTimer?.invalidate()
+        hideTimer = nil
+        observedScrollView = nil
+
+        guard let scrollView = enclosing else { return }
+        bind(scrollView)
+        observedScrollView = scrollView
+    }
+
+    private func bind(_ scrollView: NSScrollView) {
+        drawsBackgroundlessSetup(on: scrollView)
+
+        if let scroller = scrollView.verticalScroller {
+            scroller.controlSize = .small
+            scroller.knobStyle = .default
+            // 默认隐藏：系统“始终显示滚动条”偏好会忽略 autohidesScrollers，
+            // 这里用透明 + 滚动监听自行实现“滚动时浮现、停止后淡出”。
+            scroller.alphaValue = 0
+        }
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(contentScrolled(_:)),
+            name: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView
+        )
+    }
+
+    private func drawsBackgroundlessSetup(on scrollView: NSScrollView) {
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
+        scrollView.scrollerInsets = NSEdgeInsets(top: 7, left: 0, bottom: 7, right: 2)
+    }
+
+    /// 列表发生滚动：仅在滚动条尚未完全可见时才启动浮现动画（避免每帧重开动画），
+    /// 并安排 0.8s 无滚动后淡出。
+    @objc private func contentScrolled(_ note: Notification) {
+        hideTimer?.invalidate()
+        guard let scroller = observedScrollView?.verticalScroller else { return }
+        if scroller.alphaValue < 1 {
+            NSAnimationContext.beginGrouping()
+            NSAnimationContext.current.duration = 0.15
+            scroller.animator().alphaValue = 1
+            NSAnimationContext.endGrouping()
+        }
+
+        hideTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.fadeOutScroller()
             }
-            ancestor = current.superview
+        }
+    }
+
+    private func fadeOutScroller() {
+        guard let scroller = observedScrollView?.verticalScroller else { return }
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0.3
+        scroller.animator().alphaValue = 0
+        NSAnimationContext.endGrouping()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        MainActor.assumeIsolated {
+            hideTimer?.invalidate()
         }
     }
 }

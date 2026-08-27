@@ -339,7 +339,51 @@ struct FundQuoteService {
         }
     }
 
+    /// 获取基金的跟踪指数（代码 + 名称 + 当日涨跌幅）。
+    /// 仅指数/ETF/ETF联接类基金有，债券/主动权益基金通常为空。
+    /// 用于在「无前十大重仓」场景下展示关联标的（跟踪指数）的当日实时涨跌。
+    /// 涨跌幅优先走 fetchRealtimeChangeRateSafely（腾讯实时 → 东财日K兜底）；
+    /// 但上金所现货（AU9999 等）腾讯与东财 K 线均拿不到，此时用基础信息接口的
+    /// RATE 字段兜底——实测 RATE 即跟踪标的当日涨跌幅（如 000216 黄金联接 RATE=0.06%），
+    /// 并非申购费率，是该类品种唯一可用的当日涨跌源。
+    func fetchTrackIndexSafely(code: String) async -> (code: String, name: String, rate: Double?)? {
+        var components = URLComponents(string: "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNNBasicInformation")!
+        components.queryItems = [
+            URLQueryItem(name: "FCODE", value: code),
+            URLQueryItem(name: "deviceid", value: "app"),
+            URLQueryItem(name: "version", value: "6.3.5"),
+            URLQueryItem(name: "plat", value: "Iphone"),
+            URLQueryItem(name: "appType", value: "ttjj"),
+            URLQueryItem(name: "product", value: "EFund")
+        ]
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+            forHTTPHeaderField: "User-Agent"
+        )
+        do {
+            let (data, _) = try await session.data(for: request)
+            let decoded = try JSONDecoder().decode(FundBasicInfoResponse.self, from: data)
+            guard let info = decoded.datas,
+                  let indexCode = info.indexCode?.nilIfInvalid,
+                  let indexName = info.indexName?.nilIfInvalid,
+                  !indexCode.isEmpty
+            else {
+                return nil
+            }
+            let rate: Double? = info.indexRate?
+                .value
+                .nilIfBlank
+                .flatMap { Double($0.replacingOccurrences(of: "%", with: "")) }
+            return (code: indexCode, name: indexName, rate: rate)
+        } catch {
+            return nil
+        }
+    }
+
     /// 获取基金详情补充数据：净值走势、重仓股、相关行业、行业/资产配置。
+    /// 这是各独立补充接口的聚合入口，基金详情页使用；日收益页等只需单项数据时请调用下方独立接口。
     func fetchFundDetailSupplement(code: String, now: Date = .now) async -> FundDetailSupplement {
         async let history = fetchNetValueHistorySafely(code: code)
         async let position = fetchPositionSupplementSafely(code: code)
@@ -360,12 +404,52 @@ struct FundQuoteService {
             holdingDisclosureDate: positionSupplement.holdingDisclosureDate,
             industryDisclosureDate: industryAllocation.first?.date,
             assetAllocationDate: assetItems.first?.date,
-            yesterdayPoint: yesterdayPoint
+            yesterdayPoint: yesterdayPoint,
+            linkedETFCode: positionSupplement.linkedETFCode,
+            linkedETFName: positionSupplement.linkedETFName
         )
     }
 
+    // MARK: - 独立补充接口（按需调用，避免一次性拉取全部数据）
+
+    /// 仅获取净值历史走势（日收益页等只需走势的场景）。
+    func fetchNetValueHistorySafely(code: String) async -> [FundNetValuePoint] {
+        (try? await fetchNetValueHistory(code: code)) ?? []
+    }
+
+    /// 仅获取持仓补充（重仓股 + 相关行业 + 披露日期）。
+    func fetchPositionSupplementSafely(code: String) async -> FundPositionSupplement {
+        if let supplement = try? await fetchMobileInvestmentPosition(code: code) {
+            // ETF 联接/商品等无前十大重仓的品种，仍可能带关联场内 ETF（ETFCODE）。
+            // 即便 topHoldings/relatedSectors 皆空，也要保留 linkedETF*，否则调用方
+            // （applyTrackIndexIfApplicable 关联标的分支）会拿不到 518800 这类映射，
+            // 错误回落到跟踪指数（如 004253 → 黄金ETF国泰 516800 被误显示为跟踪指数）。
+            if !supplement.topHoldings.isEmpty
+                || !supplement.relatedSectors.isEmpty
+                || supplement.linkedETFCode?.nilIfInvalid != nil {
+                return supplement
+            }
+        }
+        let holdings = await self.fetchTopStockHoldingsSafely(code: code)
+        return FundPositionSupplement(
+            topHoldings: holdings,
+            relatedSectors: [],
+            holdingDisclosureDate: nil
+        )
+    }
+
+    /// 仅获取行业配置（依赖持仓披露日期，与 fetchPositionSupplementSafely 配合）。
+    func fetchSectorAllocationSafely(code: String, date: String?) async -> [FundSectorExposure] {
+        (try? await fetchSectorAllocation(code: code, date: date)) ?? []
+    }
+
+    /// 仅获取资产配置。
+    func fetchAssetAllocationSafely(code: String) async -> [FundAssetAllocationItem] {
+        (try? await fetchAssetAllocation(code: code)) ?? []
+    }
+
     /// 从净值点列表中取早于“今天”的最后一个点（昨日净值）。
-    private static func yesterdayNetValuePoint(from points: [FundNetValuePoint], now: Date) -> FundNetValuePoint? {
+    static func yesterdayNetValuePoint(from points: [FundNetValuePoint], now: Date) -> FundNetValuePoint? {
         let today = DateOnlyFormatter.string(from: now)
         return points.last { point in
             let date = Date(timeIntervalSince1970: TimeInterval(point.timestamp) / 1000)
@@ -514,38 +598,9 @@ struct FundQuoteService {
         return parseHistoricalNetValue(text, date: date)
     }
 
-    /// 安全获取净值历史（失败返回空）。
-    private func fetchNetValueHistorySafely(code: String) async -> [FundNetValuePoint] {
-        (try? await fetchNetValueHistory(code: code)) ?? []
-    }
-
     /// 安全获取十大重仓股（失败返回空）。
     private func fetchTopStockHoldingsSafely(code: String) async -> [FundStockHolding] {
         (try? await fetchTopStockHoldings(code: code)) ?? []
-    }
-
-    /// 安全获取持仓补充：优先移动端，失败回退重仓股接口。
-    private func fetchPositionSupplementSafely(code: String) async -> FundPositionSupplement {
-        if let supplement = try? await fetchMobileInvestmentPosition(code: code),
-           !supplement.topHoldings.isEmpty || !supplement.relatedSectors.isEmpty {
-            return supplement
-        }
-        let holdings = await fetchTopStockHoldingsSafely(code: code)
-        return FundPositionSupplement(
-            topHoldings: holdings,
-            relatedSectors: [],
-            holdingDisclosureDate: nil
-        )
-    }
-
-    /// 安全获取行业配置（失败返回空）。
-    private func fetchSectorAllocationSafely(code: String, date: String?) async -> [FundSectorExposure] {
-        (try? await fetchSectorAllocation(code: code, date: date)) ?? []
-    }
-
-    /// 安全获取资产配置（失败返回空）。
-    private func fetchAssetAllocationSafely(code: String) async -> [FundAssetAllocationItem] {
-        (try? await fetchAssetAllocation(code: code)) ?? []
     }
 
     /// 获取基金净值历史走势（东方财富 pingzhongdata.js）。
@@ -652,7 +707,9 @@ struct FundQuoteService {
         return FundPositionSupplement(
             topHoldings: holdings,
             relatedSectors: relatedSectors,
-            holdingDisclosureDate: response.expansion?.nilIfBlank
+            holdingDisclosureDate: response.expansion?.nilIfBlank,
+            linkedETFCode: response.datas?.etfCode?.nilIfInvalid,
+            linkedETFName: response.datas?.etfName?.nilIfInvalid
         )
     }
 
@@ -718,7 +775,7 @@ struct FundQuoteService {
     }
 
     /// 获取重仓股当日涨跌（腾讯行情接口，GB18030 编码）。
-    private func fetchStockChanges(for codes: [String]) async throws -> [String: Double] {
+    func fetchStockChanges(for codes: [String]) async throws -> [String: Double] {
         let symbols = codes.compactMap(tencentStockSymbol(for:))
         guard !symbols.isEmpty else { return [:] }
         let url = URL(string: "https://qt.gtimg.cn/q=\(symbols.joined(separator: ","))")!
@@ -743,6 +800,89 @@ struct FundQuoteService {
             changes[code] = payload
         }
         return changes
+    }
+
+    /// 获取单只股票/指数/ETF 的当日实时涨跌幅（腾讯行情接口，复用重仓股涨跌通道）。
+    /// 腾讯无法映射的品种（如上金所现货 AU9999）自动回退到东财日K接口。
+    /// 用于「无前十大重仓」场景下展示关联标的（跟踪指数）的实时涨跌。
+    func fetchRealtimeChangeRateSafely(code: String) async -> Double? {
+        if let changes = try? await fetchStockChanges(for: [code]),
+           let rate = changes[code] {
+            return rate
+        }
+        return await fetchEastmoneyKlineChangeRate(for: code)
+    }
+
+    /// 通过东财日K接口取最近两根收盘价，计算当日涨跌幅。
+    /// 盘中最后一根为最新成交价（相对昨收的实时涨跌），盘后即为当日收盘涨跌幅，
+    /// 因此盘后展示与当天收盘口径天然一致。覆盖上金所现货（AU9999 等）等
+    /// 腾讯行情通道不支持的品种。
+    private func fetchEastmoneyKlineChangeRate(for code: String) async -> Double? {
+        guard let secid = eastmoneySecIDForNonStockCode(code) else { return nil }
+        var components = URLComponents(string: "https://push2his.eastmoney.com/api/qt/stock/kline/get")!
+        components.queryItems = [
+            URLQueryItem(name: "secid", value: secid),
+            URLQueryItem(name: "fields1", value: "f1"),
+            URLQueryItem(name: "fields2", value: "f51,f53"),
+            URLQueryItem(name: "klt", value: "101"),
+            URLQueryItem(name: "fqt", value: "0"),
+            URLQueryItem(name: "lmt", value: "2"),
+            URLQueryItem(name: "end", value: "20500101")
+        ]
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+            forHTTPHeaderField: "User-Agent"
+        )
+
+        struct KlinePayload: Decodable {
+            struct Inner: Decodable { let klines: [String]? }
+            let data: Inner?
+        }
+
+        do {
+            let (data, _) = try await session.data(for: request)
+            let decoded = try JSONDecoder().decode(KlinePayload.self, from: data)
+            let closes = (decoded.data?.klines ?? []).compactMap { line -> Double? in
+                let parts = line.split(separator: ",")
+                guard parts.count >= 2 else { return nil }
+                return Double(parts[1])
+            }
+            guard closes.count >= 2,
+                  let previousClose = closes.first,
+                  let latestClose = closes.last,
+                  previousClose > 0
+            else { return nil }
+            return (latestClose - previousClose) / previousClose * 100
+        } catch {
+            return nil
+        }
+    }
+
+    /// 推断东财 secid 兜底（仅在腾讯实时通道拿不到该代码时被调用）。
+    /// 覆盖：上金所现货合约（字母开头+可选数字结尾，如 AU9999/XAU，市场号 118）；
+    /// 以及腾讯请求偶发失败时的沪/深证券代码（5/6/9 → 沪 1.，0/3 → 深 0.）。
+    private func eastmoneySecIDForNonStockCode(_ code: String) -> String? {
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 上金所现货合约：字母开头 + 可选数字结尾
+        if trimmed.range(of: #"^[A-Za-z]{1,6}\d{0,4}$"#, options: .regularExpression) != nil {
+            return "118.\(trimmed.uppercased())"
+        }
+        // 沪/深/京证券代码兜底（与 tencentStockSymbol 的交易所归属一致）
+        if trimmed.range(of: #"^\d{6}$"#, options: .regularExpression) != nil {
+            if trimmed.hasPrefix("5") || trimmed.hasPrefix("6") {
+                return "1.\(trimmed)"  // 沪市（含沪市 ETF / 股票 / 科创板）
+            }
+            if trimmed.hasPrefix("4") || trimmed.hasPrefix("8")
+                || trimmed.hasPrefix("920") || trimmed.hasPrefix("921") || trimmed.hasPrefix("922") {
+                return "0.\(trimmed)"  // 北交所（东财 secid 市场号 0）
+            }
+            if trimmed.hasPrefix("0") || trimmed.hasPrefix("3") || trimmed.hasPrefix("9") {
+                return "0.\(trimmed)"  // 深市 / 老三板等
+            }
+        }
+        return nil
     }
 
     /// 按代码搜索基金名称。
@@ -988,12 +1128,21 @@ struct FundQuoteService {
     private func tencentStockSymbol(for code: String) -> String? {
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.range(of: #"^\d{6}$"#, options: .regularExpression) != nil {
-            if trimmed.hasPrefix("6") || trimmed.hasPrefix("9") {
+            // 沪市：股票 6xxxxx、科创板 68xxxx、基金/ETF 5xxxxx（如 518880 黄金ETF）
+            if trimmed.hasPrefix("5") || trimmed.hasPrefix("6") {
                 return "s_sh\(trimmed)"
             }
-            if trimmed.hasPrefix("4") || trimmed.hasPrefix("8") {
+            // 北交所：4xxxxx / 8xxxxx，以及新代码段 920/921/922（如 920438 戈碧迦）。
+            // 注意：9 开头不再统一视作沪市，否则会错误匹配到北交所新股导致行情拉取失败。
+            if trimmed.hasPrefix("4") || trimmed.hasPrefix("8")
+                || trimmed.hasPrefix("920") || trimmed.hasPrefix("921") || trimmed.hasPrefix("922") {
                 return "s_bj\(trimmed)"
             }
+            // 9 开头其余（如老三板 400xxx 之外的沪市 B 股等）仍按沪市处理
+            if trimmed.hasPrefix("9") {
+                return "s_sh\(trimmed)"
+            }
+            // 深市：股票 000/002/300 等、ETF 15xxxx
             return "s_sz\(trimmed)"
         }
         if trimmed.range(of: #"^\d{5}$"#, options: .regularExpression) != nil {
@@ -1292,10 +1441,14 @@ struct FundValuationLastPayload: Decodable {
 }
 
 /// 基金持仓补充数据（重仓股 + 相关行业 + 披露日期）。
-private struct FundPositionSupplement: Equatable {
+struct FundPositionSupplement: Equatable {
     var topHoldings: [FundStockHolding]
     var relatedSectors: [FundSectorExposure]
     var holdingDisclosureDate: String?
+    /// 关联场内 ETF 代码（ETF 联接基金才有，如 518880）。
+    var linkedETFCode: String? = nil
+    /// 关联场内 ETF 简称。
+    var linkedETFName: String? = nil
 }
 
 /// 移动端持仓响应。
@@ -1314,6 +1467,16 @@ private struct MobileInvestmentPositionResponse: Decodable {
 /// 移动端持仓数据（重仓股列表）。
 private struct MobileInvestmentPositionData: Decodable {
     var fundStocks: [MobileFundStockPayload]?
+    /// 关联场内 ETF 代码（ETF 联接基金才有，如 000216 → 518880）。
+    var etfCode: String?
+    /// 关联场内 ETF 简称（如「黄金ETF华安」）。
+    var etfName: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case fundStocks = "fundStocks"
+        case etfCode = "ETFCODE"
+        case etfName = "ETFSHORTNAME"
+    }
 }
 
 /// 移动端重仓股负载（字段对应 GPDM/GPJC/JZBL 等）。
@@ -1442,15 +1605,25 @@ private enum CodingKeys: String, CodingKey {
 }
 }
 
-/// 天天基金基金基本信息单条（字段对应 FTYPE/SHORTNAME 等）。
+/// 天天基金基金基本信息单条（字段对应 FTYPE/SHORTNAME/INDEXCODE 等）。
 private struct FundBasicInfoItem: Decodable {
-var ftype: String?
-var shortName: String?
+    var ftype: String?
+    var shortName: String?
+    var indexCode: String?
+    var indexName: String?
+    /// 跟踪标的（指数/ETF）当日涨跌幅，如 "0.06%"。
+    /// 实测该接口（FundMNNBasicInformation）的 RATE 即跟踪标的当日涨跌（每日变化），
+    /// 并非申购费率——上金所现货（AU9999）等腾讯/东财 K 线均拿不到的品种，
+    /// 用它作关联指数涨跌幅的兜底源。
+    var indexRate: LossyString?
 
-private enum CodingKeys: String, CodingKey {
-    case ftype = "FTYPE"
-    case shortName = "SHORTNAME"
-}
+    private enum CodingKeys: String, CodingKey {
+        case ftype = "FTYPE"
+        case shortName = "SHORTNAME"
+        case indexCode = "INDEXCODE"
+        case indexName = "INDEXNAME"
+        case indexRate = "RATE"
+    }
 }
 
 /// 宽松字符串解析（兼容 null/字符串/数字）。
@@ -1500,7 +1673,7 @@ private extension Optional where Wrapped == LossyString {
     }
 }
 
-/// 字符串便捷扩展（空串转 nil、破折号转 nil）。
+/// 字符串便捷扩展（空串转 nil、破折号转 nil、常见占位符转 nil）。
 private extension String {
     var nilIfBlank: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1510,5 +1683,12 @@ private extension String {
     var nilIfDash: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty || trimmed == "--" ? nil : trimmed
+    }
+
+    /// 空串、"--"、"None"、"null" 这类接口占位符统一视为 nil。
+    var nilIfInvalid: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        let invalidPlaceholders = Set(["--", "None", "null"])
+        return trimmed.isEmpty || invalidPlaceholders.contains(trimmed) ? nil : trimmed
     }
 }

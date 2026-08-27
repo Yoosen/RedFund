@@ -403,7 +403,7 @@ final class StatusBarController: NSObject, ObservableObject {
     private var settingsSectionSession = SettingsSectionSession() // 记住设置面板上次所在分区
     private var onboardingResumeStep = 0                // 引导流程可恢复的步数
     // 持仓表现面板的状态记忆（分页/指标/区间/月份）
-    private var holdingPerformancePage: HoldingPerformancePage = .ranking
+    private var holdingPerformancePage: HoldingPerformancePage = .calendar
     private var holdingPerformanceMetric: IncomeRankingMetric = .amount
     private var holdingPerformanceRange: PortfolioPerformanceRange = .threeMonths
     private var holdingPerformanceMonth: Date?
@@ -558,18 +558,18 @@ final class StatusBarController: NSObject, ObservableObject {
             settingsSectionSession.select(.support)
             route = .settings
         case "performance":
-            holdingPerformancePage = .ranking
+            holdingPerformancePage = .calendar
             route = .portfolioPerformance
         case "performance-sample":
             debugPerformanceStore = makeDebugPerformanceStore()
-            holdingPerformancePage = .curve
+            holdingPerformancePage = .calendar
             route = .portfolioPerformance
         case "performance-calendar-sample":
             debugPerformanceStore = makeDebugPerformanceStore()
             holdingPerformancePage = .calendar
             route = .portfolioPerformance
         case "performance-sync":
-            holdingPerformancePage = .curve
+            holdingPerformancePage = .calendar
             route = .jdFinancePerformanceSync
         case "settings":
             route = .settings
@@ -885,8 +885,11 @@ final class StatusBarController: NSObject, ObservableObject {
         mainPanelWindow?.makeFirstResponder(nil)
 
         if case .fundDetail = route {
-            // 进入基金详情时立即刷新一次行情，避免估值停留在上一次成功刷新的结果。
-            refreshQuotesAndStatusTitle()
+            // 进入基金详情时刷新一次行情，避免估值停留在上一次成功刷新的结果。
+            // 延后到下一 runloop，避免与子面板窗口显示/主面板滚动抢占主线程导致卡顿。
+            DispatchQueue.main.async { [weak self] in
+                self?.refreshQuotesAndStatusTitle()
+            }
         }
 
         let window = childPanelWindow ?? createChildPanelWindow()
@@ -1649,7 +1652,6 @@ final class StatusBarController: NSObject, ObservableObject {
         guard let mainPanelWindow, mainPanelWindow.isVisible else { return }
         applyPanelAppearance(to: mainPanelWindow, animated: animatedAppearance)
         let mainSize = mainPanelWindowSize
-        mainPanelWindow.setContentSize(mainSize)
         positionMainPanel(window: mainPanelWindow, size: mainSize)
 
         guard let childPanelWindow, childPanelWindow.isVisible else { return }
@@ -1688,7 +1690,6 @@ final class StatusBarController: NSObject, ObservableObject {
         case nil:
             return
         }
-        childPanelWindow.setContentSize(size)
         positionChildPanel(window: childPanelWindow, size: size)
     }
 
@@ -1696,7 +1697,6 @@ final class StatusBarController: NSObject, ObservableObject {
     private func resizeAndPositionMainPanel() {
         guard let mainPanelWindow, mainPanelWindow.isVisible else { return }
         let mainSize = mainPanelWindowSize
-        mainPanelWindow.setContentSize(mainSize)
         positionMainPanel(window: mainPanelWindow, size: mainSize)
     }
 
@@ -1888,7 +1888,11 @@ final class StatusBarController: NSObject, ObservableObject {
         originY = max(visibleFrame.minY + 8, originY)
 
         popoverState.arrowX = anchorFrame.midX - originX // 让小三角指向按钮中心
-        window.setFrame(NSRect(origin: NSPoint(x: originX, y: originY), size: size), display: true)
+        // 每次快照变化都会走到这里；位置尺寸都没变时跳过 setFrame，
+        // 避免无条件强制窗口立即重绘、打断列表滚动的帧渲染。
+        let targetFrame = NSRect(origin: NSPoint(x: originX, y: originY), size: size)
+        if NSEqualRects(window.frame, targetFrame) { return }
+        window.setFrame(targetFrame, display: true)
     }
 
     // 子面板定位到主面板右侧（若超出屏幕右边界则翻到左侧）
@@ -1905,7 +1909,10 @@ final class StatusBarController: NSObject, ObservableObject {
         originY = min(originY, visibleFrame.maxY - size.height - 8)
         originY = max(originY, visibleFrame.minY + 8)
 
-        window.setFrame(NSRect(origin: NSPoint(x: originX, y: originY), size: size), display: true)
+        // 同 positionMainPanel：无变化时跳过强制重绘
+        let targetFrame = NSRect(origin: NSPoint(x: originX, y: originY), size: size)
+        if NSEqualRects(window.frame, targetFrame) { return }
+        window.setFrame(targetFrame, display: true)
     }
 
     // 京东登录面板居中显示于屏幕

@@ -10,6 +10,122 @@ final class PortfolioStore {
     private(set) var snapshot: PortfolioSnapshot = .empty
     private(set) var loadState: LoadState = .loading
     private(set) var isRefreshingQuotes = false
+    /// 每次「手动刷新」（用户点击刷新按钮）完成后自增，用于通知详情页等子视图强制补充拉取（如十大重仓涨跌幅），绕过定时节流。
+    private(set) var manualRefreshToken = 0
+
+    /// 手动刷新完成后调用，广播信号给子视图（详情页等）强制补充拉取。
+    func signalManualRefresh() {
+        manualRefreshToken &+= 1
+    }
+
+    /// 已拉取到的重仓补充数据（十大重仓股及涨跌幅等）缓存，按基金代码保留。
+    /// 内存缓存 + 磁盘缓存双份：内存用于运行期快速命中，磁盘用于跨 App 重启保留。
+    /// 局部请求失败返回空数据时保留上次有效值，详情页的核心重仓信息不会消失。
+    @ObservationIgnored private var supplementCache: [String: FundDetailSupplement] = [:]
+
+    /// 重仓名单（十大重仓股、占比、相关行业）按季度披露日变化，基本只在每个季度末的
+    /// 定期报告里更新。用「最近一个已过去的季度末」作为当前应生效的报告日：缓存的披露日
+    /// 已 ≥ 该报告日，说明本季度窗口内已成功拉到最新名单，直接复用、不再发请求。
+    /// 这样既能消除固定窗口的盲区，又保证「拉到即稳定」——交易时段高频自动刷新不会
+    /// 反复重拉静态部分（避免详情页下滑时因重仓接口请求 / body 重算而卡顿）。
+    /// 新披露的季度报告会在「下一季度窗口」首次进入时自动发现；用户主动手动刷新（force）
+    /// 则随时可立即拉到最新。
+
+    /// 按代码取当前快照中的一只基金。详情页应通过此方法读取，避免在视图里直接遍历整个 `snapshot.funds`。
+    func fund(code: String) -> FundPosition? {
+        snapshot.funds.first { $0.code == code }
+    }
+
+    /// 读取某基金已缓存的重仓补充数据（内存优先，无则从磁盘加载）。
+    func cachedSupplement(for code: String) -> FundDetailSupplement? {
+        if let cached = supplementCache[code] {
+            return cached
+        }
+        if let fromDisk = loadSupplementFromDisk(code: code) {
+            supplementCache[code] = fromDisk
+            return fromDisk
+        }
+        return nil
+    }
+
+    /// 写入某基金拉取到的重仓补充数据；仅用有效字段更新已有缓存，并落盘。
+    func cacheSupplement(_ supplement: FundDetailSupplement, for code: String) {
+        let merged = supplementCache[code]?.mergingAvailableData(from: supplement) ?? supplement
+        supplementCache[code] = merged
+        persistSupplement(merged, for: code)
+    }
+
+    /// 静态重仓部分（名单/占比/行业）是否仍可复用：
+    /// 缓存存在、披露日非空、且该披露日已覆盖「最近一个已过去的季度末」报告。
+    func staticHoldingsStillValid(for code: String, now: Date = .now) -> Bool {
+        guard let cached = cachedSupplement(for: code),
+              let disclosure = cached.holdingDisclosureDate,
+              let disclosureDate = Self.parseDisclosureDate(disclosure) else {
+            return false
+        }
+        let lastQuarterEnd = Self.lastPassedQuarterEnd(before: now)
+        // 披露日已覆盖本季度报告 ⇒ 复用，不再发请求（拉到即稳定，避免高频重拉卡顿）。
+        return disclosureDate >= lastQuarterEnd
+    }
+
+    /// 最近一个已过去的季度末（3/31、6/30、9/30、12/31），本地时区按北京时间。
+    private static func lastPassedQuarterEnd(before now: Date) -> Date {
+        let calendar = Calendar(identifier: .gregorian)
+        let components = calendar.dateComponents([.year, .month, .day], from: now)
+        let quarterEndMonths = [3, 6, 9, 12]
+        // 找到 ≤ 当前月份的最大季度末月份
+        let currentMonth = components.month ?? 1
+        let endMonth = quarterEndMonths.last { $0 <= currentMonth } ?? 12
+        // 若回退到 12 月说明跨年（当前为 1/2 月时，上一季度末在前一年 12 月）
+        let year = (endMonth == 12 && currentMonth < 3) ? (components.year ?? 2000) - 1 : (components.year ?? 2000)
+        var result = DateComponents()
+        result.year = year
+        result.month = endMonth
+        result.day = endMonth == 2 ? 28 : 30   // 季度末：3/31,6/30,9/30,12/31
+        result.hour = 0
+        result.minute = 0
+        result.second = 0
+        result.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        return calendar.date(from: result) ?? now
+    }
+
+    /// 解析披露日（支持 yyyy-MM-dd / yyyy-MM-dd HH:mm:ss 两种格式）。
+    private static func parseDisclosureDate(_ string: String) -> Date? {
+        let formats = ["yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd"]
+        let formatter = DateFormatter()
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        for format in formats {
+            formatter.dateFormat = format
+            if let date = formatter.date(from: string) {
+                return date
+            }
+        }
+        return nil
+    }
+
+    // MARK: - 重仓补充数据磁盘缓存
+
+    private func supplementFileURL(code: String) -> URL {
+        dataDirectory.appending(path: "fund-detail-supplement-\(code).json")
+    }
+
+    private func loadSupplementFromDisk(code: String) -> FundDetailSupplement? {
+        let url = supplementFileURL(code: code)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(FundDetailSupplement.self, from: data)
+    }
+
+    private func persistSupplement(_ supplement: FundDetailSupplement, for code: String) {
+        let url = supplementFileURL(code: code)
+        Task.detached(priority: .utility) {
+            do {
+                let data = try JSONEncoder().encode(supplement)
+                try data.write(to: url, options: .atomic)
+            } catch {
+                // 缓存落盘失败不阻塞主流程，仅忽略。
+            }
+        }
+    }
     private(set) var dataDirectory: URL
     private let quoteService: FundQuoteService
     private let settingsStore: AppSettingsStore
@@ -250,7 +366,7 @@ final class PortfolioStore {
                 quotes: quotes
             )
             syncInitialTradeRecordsFromFunds()
-            try save(snapshot)
+            try await persistSnapshotOffMain(snapshot)
             recordPortfolioPerformanceIfPossible(quotes: quotes, now: now)
             loadState = .loaded
         } catch {
@@ -358,11 +474,13 @@ final class PortfolioStore {
         try? save(snapshot)
     }
 
-    /// 手动刷新时（重新）批量抓取所有基金的官方类型。
-    /// 与建仓/加减仓时不同，手动刷新会刷新全部持仓的类型（已存在的也会被更新），
-    /// 失败则保留原值。批次间无并发限制——手动刷新频率低，可忽略请求开销。
+    /// 手动刷新时批量补抓缺失的基金官方类型。
+    /// 仅对 fundType 仍为 nil 的持仓请求类型接口，已正确识别的不再重复请求，
+    /// 把手动刷新的类型请求数从「全部持仓」降到「仅缺失项」。失败则保留原值。
     private func backfillMissingFundTypes() async {
-        let codes = snapshot.funds.map(\.code)
+        let codes = snapshot.funds
+            .filter { $0.fundType == nil }
+            .map(\.code)
         guard !codes.isEmpty else { return }
         await resolveFundTypeForAll(codes)
     }
@@ -3837,6 +3955,32 @@ final class PortfolioStore {
             try repository.save(snapshot)
             persistedSnapshot = snapshot
         } catch {
+            if let persistedSnapshot {
+                self.snapshot = persistedSnapshot
+            }
+            throw error
+        }
+    }
+
+    /// 刷新路径专用的持久化：JSON 编码与磁盘写入放到后台线程执行，
+    /// 避免与列表滚动争抢主线程造成掉帧（盘中估值历史会让 portfolio.json
+    /// 在交易时段增长到数百 KB，主线程编码每帧代价明显）。
+    /// 返回前等待写盘完成，顺序、错误回滚与基线更新语义与同步 `save(_:)` 完全一致；
+    /// 测试与暂存等非文件仓储退化为原有同步路径。
+    private func persistSnapshotOffMain(_ snapshot: PortfolioSnapshot) async throws {
+        guard let jsonRepository = repository as? JSONPortfolioRepository else {
+            try save(snapshot)
+            return
+        }
+
+        let outcome = await Task.detached(priority: .utility) {
+            Result<Void, Error> { try jsonRepository.save(snapshot) }
+        }.value
+
+        switch outcome {
+        case .success:
+            persistedSnapshot = snapshot
+        case .failure(let error):
             if let persistedSnapshot {
                 self.snapshot = persistedSnapshot
             }

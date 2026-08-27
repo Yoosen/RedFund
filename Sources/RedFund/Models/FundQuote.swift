@@ -19,7 +19,7 @@ struct FundQuote: Codable, Equatable {
 }
 
 /// 净值走势上的单个数据点。
-struct FundNetValuePoint: Identifiable, Equatable {
+struct FundNetValuePoint: Identifiable, Equatable, Codable {
     var id: Int64 { timestamp }
     /// 时间戳（毫秒）。
     var timestamp: Int64
@@ -30,7 +30,7 @@ struct FundNetValuePoint: Identifiable, Equatable {
 }
 
 /// 基金十大重仓股。
-struct FundStockHolding: Identifiable, Equatable {
+struct FundStockHolding: Identifiable, Equatable, Codable {
     var id: String { code.isEmpty ? name : code }
     /// 股票代码。
     var code: String
@@ -75,9 +75,9 @@ struct FundStockHolding: Identifiable, Equatable {
 }
 
 /// 基金的行业/板块暴露。
-struct FundSectorExposure: Identifiable, Equatable {
+struct FundSectorExposure: Identifiable, Equatable, Codable {
     /// 暴露数据来源。
-    enum Source: String, Equatable {
+    enum Source: String, Equatable, Codable {
         /// 来自十大重仓股映射。
         case topHoldings
         /// 来自披露的行业配置。
@@ -98,7 +98,7 @@ struct FundSectorExposure: Identifiable, Equatable {
 }
 
 /// 基金的资产配置项（如股票/债券/现金占比）。
-struct FundAssetAllocationItem: Identifiable, Equatable {
+struct FundAssetAllocationItem: Identifiable, Equatable, Codable {
     var id: String { name }
     /// 资产类别名称。
     var name: String
@@ -109,7 +109,7 @@ struct FundAssetAllocationItem: Identifiable, Equatable {
 }
 
 /// 基金详情的补充数据（走势、持仓、行业、资产配置等）。
-struct FundDetailSupplement: Equatable {
+struct FundDetailSupplement: Equatable, Codable {
     /// 净值走势点。
     var trend: [FundNetValuePoint]
     /// 历史净值点。
@@ -130,6 +130,22 @@ struct FundDetailSupplement: Equatable {
     var assetAllocationDate: String?
     /// 昨日净值点（用于对比）。
     var yesterdayPoint: FundNetValuePoint?
+    /// 跟踪指数代码（仅指数/ETF/ETF联接类基金有，如 000688）。
+    var indexCode: String?
+    /// 跟踪指数名称（如 科创50）。
+    var indexName: String?
+    /// 跟踪指数当日涨跌幅（盘内为实时值，收盘后为当日收盘涨跌幅）。
+    var indexChangeRate: Double?
+    /// 关联场内 ETF 代码（ETF 联接基金才有，如 518880）。
+    var linkedETFCode: String? = nil
+    /// 关联场内 ETF 简称（如 黄金ETF华安）。
+    var linkedETFName: String? = nil
+    /// 关联标的种类："etf" = 场内 ETF（市价口径），"index" = 跟踪指数；nil 视为指数。
+    var relatedKind: String? = nil
+    /// 重仓股涨跌幅对应的交易日（格式 `yyyy-MM-dd`）。盘后保留涨跌幅时据此判断
+    /// 缓存是否为「今天」的值；若为更早交易日则视为过期，需重新拉一次当日涨跌幅，
+    /// 避免盘后一直展示上一交易日的重仓股涨跌（见 PopoverContentView.loadSupplement）。
+    var topHoldingsChangeDate: String?
 
     /// 空补充数据（用于加载失败/无数据兜底）。
     static let empty = FundDetailSupplement(
@@ -142,6 +158,33 @@ struct FundDetailSupplement: Equatable {
         holdingDisclosureDate: nil,
         industryDisclosureDate: nil,
         assetAllocationDate: nil,
-        yesterdayPoint: nil
+        yesterdayPoint: nil,
+        indexCode: nil,
+        indexName: nil,
+        indexChangeRate: nil,
+        topHoldingsChangeDate: nil
     )
+
+    /// 合并一次补充拉取的结果。网络端的某一模块短暂失败时会返回空数组，
+    /// 不应覆盖已展示的有效重仓数据，避免详情页核心信息闪回“暂无数据”。
+    func mergingAvailableData(from next: FundDetailSupplement) -> FundDetailSupplement {
+        FundDetailSupplement(
+            trend: next.trend.isEmpty ? trend : next.trend,
+            history: next.history.isEmpty ? history : next.history,
+            topHoldings: next.topHoldings.isEmpty ? topHoldings : next.topHoldings,
+            relatedSectors: next.relatedSectors.isEmpty ? relatedSectors : next.relatedSectors,
+            industryAllocation: next.industryAllocation.isEmpty ? industryAllocation : next.industryAllocation,
+            assetAllocation: next.assetAllocation.isEmpty ? assetAllocation : next.assetAllocation,
+            holdingDisclosureDate: next.holdingDisclosureDate ?? holdingDisclosureDate,
+            industryDisclosureDate: next.industryDisclosureDate ?? industryDisclosureDate,
+            assetAllocationDate: next.assetAllocationDate ?? assetAllocationDate,
+            yesterdayPoint: next.yesterdayPoint ?? yesterdayPoint,
+            indexCode: next.indexCode ?? indexCode,
+            indexName: next.indexName ?? indexName,
+            indexChangeRate: next.indexChangeRate ?? indexChangeRate,
+            linkedETFCode: next.linkedETFCode ?? linkedETFCode,
+            linkedETFName: next.linkedETFName ?? linkedETFName,
+            relatedKind: next.relatedKind ?? relatedKind
+        )
+    }
 }
