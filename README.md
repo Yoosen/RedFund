@@ -191,3 +191,7 @@ Red Fund 仅用于个人记录和信息参考，不构成投资建议、要约�
   如果 Red Fund 对你有帮助，欢迎点亮一个 ⭐️。<br>
   <sub>Made for a calmer macOS menu bar.</sub>
 </p>
+
+
+## FRIENDS
+- [Linux.do](https://linux.do/)
