@@ -26,18 +26,13 @@ struct JSONPortfolioRepository: PortfolioRepository {
         }
 
         let data = try Data(contentsOf: dataFileURL)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(PortfolioSnapshot.self, from: data)
+        return try SharedJSONCoders.iso8601Decoder.decode(PortfolioSnapshot.self, from: data)
     }
 
     /// 将持仓快照编码为格式化 JSON 并原子写入磁盘。
     func save(_ snapshot: PortfolioSnapshot) throws {
         try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(snapshot)
+        let data = try SharedJSONCoders.iso8601PrettyEncoder.encode(snapshot)
         try data.write(to: dataFileURL, options: .atomic)
     }
 }

@@ -80,6 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     // 应用即将退出时调用，做资源清理
     func applicationWillTerminate(_ notification: Notification) {
+        // 补写被落盘节流推迟的行情快照，避免丢失最近一次刷新结果。
+        portfolioStore.flushPendingQuotePersistIfNeeded()
         statusBarController?.invalidate() // 让菜单栏控制器停止定时器等资源
         statusBarController = nil          // 释放控制器
         if let backgroundRefreshActivity {

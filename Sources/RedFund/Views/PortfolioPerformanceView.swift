@@ -595,21 +595,28 @@ private struct PortfolioCumulativeProfitChart: View {
     }
 
     /// 更新当前悬停数据索引。
+    ///
+    /// 鼠标每移动一像素都会触发 `mouseMoved`，但数据索引是按 `round(x / width * (count-1))`
+    /// 量化的——几十上百个数据点铺在几百像素上，往往移动好几像素索引才跳一格。
+    /// 若不做相等性判断就赋值，`hoverIndex` 的每次写入都会让 `body` 整体重算，
+    /// 连带 O(n) 的 `cumulativeReturnRates`/`intervalProfit` 与整张 Canvas 重绘，
+    /// 属于悬停时最大的一笔浪费。故仅在索引真正变化时写入。
     private func updateHoverIndex(location: CGPoint?, size: CGSize) {
-        guard let location, size.width > 0, points.count > 0 else {
-            hoverIndex = nil
-            return
-        }
-        guard location.y >= 0, location.y <= size.height else {
-            hoverIndex = nil
-            return
-        }
-        if points.count == 1 {
-            hoverIndex = 0
+        let nextIndex: Int?
+        if let location, size.width > 0, points.count > 0,
+           location.y >= 0, location.y <= size.height {
+            if points.count == 1 {
+                nextIndex = 0
+            } else {
+                let index = Int(round(location.x / size.width * CGFloat(points.count - 1)))
+                nextIndex = min(max(index, 0), points.count - 1)
+            }
         } else {
-            let index = Int(round(location.x / size.width * CGFloat(points.count - 1)))
-            hoverIndex = min(max(index, 0), points.count - 1)
+            nextIndex = nil
         }
+
+        guard nextIndex != hoverIndex else { return }
+        hoverIndex = nextIndex
     }
 
     /// 悬停提示视图。

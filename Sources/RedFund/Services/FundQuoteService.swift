@@ -87,7 +87,7 @@ struct FundQuoteService {
         )
 
         guard let (data, _) = try? await session.data(for: request),
-              let response = try? JSONDecoder().decode(FundValuationLastResponse.self, from: data),
+              let response = try? SharedJSONCoders.decoder.decode(FundValuationLastResponse.self, from: data),
               response.success != false,
               let rows = response.data
         else {
@@ -330,7 +330,7 @@ struct FundQuoteService {
 
         do {
             let (data, _) = try await session.data(for: request)
-            let decoded = try JSONDecoder().decode(FundBasicInfoResponse.self, from: data)
+            let decoded = try SharedJSONCoders.decoder.decode(FundBasicInfoResponse.self, from: data)
             guard let info = decoded.datas else { return nil }
             let isQDII = Self.qdiiBaseSearchName(for: info.shortName ?? "") != nil
             return FundType.from(ftype: info.ftype, isQDII: isQDII)
@@ -364,7 +364,7 @@ struct FundQuoteService {
         )
         do {
             let (data, _) = try await session.data(for: request)
-            let decoded = try JSONDecoder().decode(FundBasicInfoResponse.self, from: data)
+            let decoded = try SharedJSONCoders.decoder.decode(FundBasicInfoResponse.self, from: data)
             guard let info = decoded.datas,
                   let indexCode = info.indexCode?.nilIfInvalid,
                   let indexName = info.indexName?.nilIfInvalid,
@@ -395,7 +395,6 @@ struct FundQuoteService {
         )
         let yesterdayPoint = Self.yesterdayNetValuePoint(from: historyPoints, now: now)
         return FundDetailSupplement(
-            trend: historyPoints,
             history: historyPoints,
             topHoldings: positionSupplement.topHoldings,
             relatedSectors: positionSupplement.relatedSectors,
@@ -489,7 +488,7 @@ struct FundQuoteService {
         )
 
         let (data, _) = try await session.data(for: request)
-        let response = try JSONDecoder().decode(EastmoneyCoreQuoteResponse.self, from: data)
+        let response = try SharedJSONCoders.decoder.decode(EastmoneyCoreQuoteResponse.self, from: data)
         guard response.success != false,
               let rows = response.data,
               !rows.isEmpty
@@ -556,7 +555,7 @@ struct FundQuoteService {
             throw QuoteError.invalidResponse
         }
 
-        let payload = try JSONDecoder().decode(EastmoneyHistoricalNetValueResponse.self, from: data)
+        let payload = try SharedJSONCoders.decoder.decode(EastmoneyHistoricalNetValueResponse.self, from: data)
         guard payload.errorCode == 0 else {
             throw QuoteError.invalidResponse
         }
@@ -619,7 +618,7 @@ struct FundQuoteService {
         else {
             throw QuoteError.invalidResponse
         }
-        let rows = try JSONDecoder().decode([NetWorthTrendPayload].self, from: payload)
+        let rows = try SharedJSONCoders.decoder.decode([NetWorthTrendPayload].self, from: payload)
         return rows.map {
             FundNetValuePoint(
                 timestamp: Int64($0.x),
@@ -666,7 +665,7 @@ struct FundQuoteService {
         guard let url = components.url else { throw QuoteError.invalidResponse }
 
         let (data, _) = try await session.data(for: eastmoneyMobileRequest(url: url))
-        let response = try JSONDecoder().decode(MobileInvestmentPositionResponse.self, from: data)
+        let response = try SharedJSONCoders.decoder.decode(MobileInvestmentPositionResponse.self, from: data)
         guard response.success == true,
               let stocks = response.datas?.fundStocks
         else {
@@ -722,7 +721,7 @@ struct FundQuoteService {
         guard let url = components.url else { throw QuoteError.invalidResponse }
 
         let (data, _) = try await session.data(for: eastmoneyMobileRequest(url: url))
-        let response = try JSONDecoder().decode(MobileSectorAllocationResponse.self, from: data)
+        let response = try SharedJSONCoders.decoder.decode(MobileSectorAllocationResponse.self, from: data)
         guard response.success == true,
               let rows = response.datas
         else {
@@ -753,7 +752,7 @@ struct FundQuoteService {
         guard let url = components.url else { throw QuoteError.invalidResponse }
 
         let (data, _) = try await session.data(for: eastmoneyMobileRequest(url: url))
-        let response = try JSONDecoder().decode(MobileAssetAllocationResponse.self, from: data)
+        let response = try SharedJSONCoders.decoder.decode(MobileAssetAllocationResponse.self, from: data)
         guard response.success == true,
               let row = response.datas?.first
         else {
@@ -843,7 +842,7 @@ struct FundQuoteService {
 
         do {
             let (data, _) = try await session.data(for: request)
-            let decoded = try JSONDecoder().decode(KlinePayload.self, from: data)
+            let decoded = try SharedJSONCoders.decoder.decode(KlinePayload.self, from: data)
             let closes = (decoded.data?.klines ?? []).compactMap { line -> Double? in
                 let parts = line.split(separator: ",")
                 guard parts.count >= 2 else { return nil }
@@ -918,7 +917,7 @@ struct FundQuoteService {
             throw QuoteError.invalidResponse
         }
 
-        let response = try JSONDecoder().decode(FundSearchResponse.self, from: payload)
+        let response = try SharedJSONCoders.decoder.decode(FundSearchResponse.self, from: payload)
         return response.datas ?? []
     }
 

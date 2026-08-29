@@ -78,7 +78,7 @@ struct MarketIndexService {
         guard let url = components.url else { throw URLError(.badURL) }
 
         let (data, _) = try await session.data(for: marketIndexRequest(url: url))
-        let response = try JSONDecoder().decode(EastmoneyMarketIndexListResponse.self, from: data)
+        let response = try SharedJSONCoders.decoder.decode(EastmoneyMarketIndexListResponse.self, from: data)
         guard response.rc == 0, let items = response.data?.items else {
             throw URLError(.badServerResponse)
         }
@@ -113,7 +113,7 @@ struct MarketIndexService {
         guard let url = components.url else { throw URLError(.badURL) }
 
         let (data, _) = try await session.data(for: tonghuashunMarketBreadthRequest(url: url))
-        let response = try JSONDecoder().decode(TonghuashunIndexFlashResponse.self, from: data)
+        let response = try SharedJSONCoders.decoder.decode(TonghuashunIndexFlashResponse.self, from: data)
         guard let payload = response.distribution,
               let risingCount = payload.risingCount?.value,
               let fallingCount = payload.fallingCount?.value,
@@ -197,7 +197,7 @@ struct MarketIndexService {
                 guard let url = components.url else { throw URLError(.badURL) }
 
                 let (data, _) = try await session.data(for: marketIndexRequest(url: url))
-                let response = try JSONDecoder().decode(EastmoneyMarketBreadthResponse.self, from: data)
+                let response = try SharedJSONCoders.decoder.decode(EastmoneyMarketBreadthResponse.self, from: data)
                 guard response.rc == 0,
                       let payload = response.data,
                       let items = payload.items

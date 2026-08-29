@@ -47,12 +47,17 @@ final class AppUpdateStore {
     private var checkGeneration = 0
     private var currentCheckMode: AppUpdateCheckMode?
 
-    /// 供 UI 使用的展示状态：会结合 `autoUpdateCheckEnabled` 抑制更新提示。
-    /// 关闭自动检查时，完全不提示更新相关信息——已检查到的新版本、已是最新、失败、检查中、
-    /// 空闲一律视为 `.idle`；仅保留用户已在进行的主动安装操作链（下载中/已下载/安装中），
-    /// 从而主界面不再展示「发现新版本/需要下载」，右键菜单也回到静默状态。
+    /// 供 UI 使用的展示状态：会结合 `autoUpdateCheckEnabled` 抑制**被动后台自动检查**的提示。
+    /// 关闭自动检查时，后台检查（`.background` 模式）产生的已是最新/失败/检查中/空闲一律视为
+    /// `.idle`，主界面与右键菜单回到静默；而**用户主动检查**（`.interactive` 模式，如点
+    /// 「检查更新」按钮/菜单项）触发的状态始终透传——即便关了自动检查，手动点检查也该给出反馈
+    /// （检查中/发现新版本/失败）。进行中的安装操作链（下载中/已下载/安装中）不受开关影响。
     var presentationStatus: AppUpdateStatus {
         guard !autoUpdateCheckEnabled else { return status }
+        // 主动交互式检查的结果全程展示，不被静默抑制
+        if currentCheckMode == .interactive {
+            return status
+        }
         switch status {
         case .downloading, .downloaded, .installing:
             return status

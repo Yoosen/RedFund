@@ -407,6 +407,10 @@ final class StatusBarController: NSObject, ObservableObject {
     private var holdingPerformanceMetric: IncomeRankingMetric = .amount
     private var holdingPerformanceRange: PortfolioPerformanceRange = .threeMonths
     private var holdingPerformanceMonth: Date?
+    // 菜单栏标题的脏检查基线：避免每轮刷新重复设置 attributedTitle 与 length
+    private var lastStatusTitleText: String?
+    private var lastStatusTitleAttributes: [NSAttributedString.Key: Any]?
+    private var lastStatusTitleVisualLength: CGFloat?
 #if DEBUG
     private var debugPerformanceStore: PortfolioPerformanceStore? // 调试用：可注入样例表现数据
 #endif
@@ -612,6 +616,7 @@ final class StatusBarController: NSObject, ObservableObject {
         button.image = statusPulseImage
         button.imagePosition = .imageLeft
         button.imageScaling = .scaleProportionallyDown
+        button.toolTip = "Red Fund"
         button.target = self
         button.action = #selector(handleStatusItemAction(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp]) // 左键/右键都触发
@@ -620,18 +625,47 @@ final class StatusBarController: NSObject, ObservableObject {
         statusItem.length = StatusItemPresentation.iconSize
     }
 
-    // 刷新菜单栏标题文字（今日收益/涨跌幅）及其着色
+    // 刷新菜单栏标题文字（今日收益/涨跌幅）及其着色。
+    // 仅在文本/配色/视觉宽度任一变化时触碰 statusItem：改动 length 会触发整个菜单栏重排，
+    // 而刷新定时器盘中每 5 秒就会走到这里，多数情况下展示值（2 位小数）并未改变。
     func updateStatusTitle(animated: Bool = false) {
         let presentation = currentStatusTitlePresentation()
         guard let button = statusItem.button else { return }
-        button.toolTip = "red-fund"
-        button.image = statusPulseImage
-        button.imagePosition = .imageLeft
+
+        guard presentation.text != lastStatusTitleText
+                || !isSameTitleAttributes(presentation.attributes, lastStatusTitleAttributes) else {
+            return
+        }
+
         button.attributedTitle = NSAttributedString(
             string: presentation.text,
             attributes: presentation.attributes
         )
-        setStatusItemLength(for: presentation)
+        // 宽度未变则不动 length，避免无谓的菜单栏全局重排
+        if presentation.visualLength != lastStatusTitleVisualLength {
+            setStatusItemLength(for: presentation)
+        }
+
+        lastStatusTitleText = presentation.text
+        lastStatusTitleAttributes = presentation.attributes
+        lastStatusTitleVisualLength = presentation.visualLength
+    }
+
+    // 富文本属性对比：只关心本类实际写入的 font 与 foregroundColor
+    private func isSameTitleAttributes(
+        _ lhs: [NSAttributedString.Key: Any],
+        _ rhs: [NSAttributedString.Key: Any]?
+    ) -> Bool {
+        guard let rhs,
+              let lhsFont = lhs[.font] as? NSFont,
+              let rhsFont = rhs[.font] as? NSFont,
+              lhsFont.isEqual(to: rhsFont),
+              let lhsColor = lhs[.foregroundColor] as? NSColor,
+              let rhsColor = rhs[.foregroundColor] as? NSColor,
+              lhsColor.isEqual(to: rhsColor) else {
+            return false
+        }
+        return true
     }
 
     // 根据当前设置与持仓快照，计算菜单栏标题的"文字 + 属性 + 视觉宽度"
@@ -2376,6 +2410,13 @@ final class StatusBarController: NSObject, ObservableObject {
 
     // 计算下一次自动刷新的间隔：取"用户设置间隔"与"距下一个交易时段边界"的较小值，确保开盘即刷新
     private func nextAutoRefreshInterval(now: Date = .now) -> TimeInterval {
+        // 数据静止时段（午休、深夜至清晨）改为定点唤醒，避免按固定间隔反复空刷。
+        // 该窗口内估值冻结，刷新拿不到新数据，却仍会触发一次全量落盘。
+        if let wake = TradingCalendar.nextQuietWakeTime(after: now) {
+            let wakeInterval = wake.timeIntervalSince(now)
+            if wakeInterval > 0 { return wakeInterval }
+        }
+
         let interval = settingsStore.settings.effectiveAutoRefreshInterval(now: now).seconds
 
         guard let boundary = TradingCalendar.nextMarketSessionBoundary(after: now) else {

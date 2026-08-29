@@ -46,7 +46,9 @@ enum EstimationDeviationRecorder {
         next.funds = snapshot.funds.map { fund in
             guard let intradayDate = fund.intradayRateDate,
                   let points = fund.intradayRateHistory,
-                  let lastPoint = points.sorted(by: { $0.timestamp < $1.timestamp }).last
+                  // 取时间最晚的点即可：O(n)。原先的 sorted().last 是 O(n log n)，
+                  // 而这里位于每轮刷新的逐基金热路径上。
+                  let lastPoint = points.max(by: { $0.timestamp < $1.timestamp })
             else {
                 return fund
             }

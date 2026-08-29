@@ -43,7 +43,7 @@ final class XiaobeiSessionStore {
     func load() {
         guard FileManager.default.fileExists(atPath: fileURL.path),
               let data = try? Data(contentsOf: fileURL),
-              let decoded = try? JSONDecoder().decode(XiaobeiSession.self, from: data)
+              let decoded = try? SharedJSONCoders.decoder.decode(XiaobeiSession.self, from: data)
         else {
             session = nil
             return
@@ -55,7 +55,7 @@ final class XiaobeiSessionStore {
     func save(_ session: XiaobeiSession) {
         self.session = session
         do {
-            let data = try JSONEncoder().encode(session)
+            let data = try SharedJSONCoders.encoder.encode(session)
             try data.write(to: fileURL, options: .atomic)
         } catch {
             // 持久化失败不影响本次运行的内存态，仅下次启动读不到。

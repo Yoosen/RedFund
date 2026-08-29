@@ -49,7 +49,7 @@ enum XiaobeiQuoteService {
                 userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"]
             )
         }
-        return try JSONDecoder().decode(T.self, from: data)
+        return try SharedJSONCoders.decoder.decode(T.self, from: data)
     }
 
     /// 顶层响应结构：code==200 为成功，data 为业务数据。

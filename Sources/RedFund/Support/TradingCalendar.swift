@@ -138,6 +138,87 @@ enum TradingCalendar {
         return day
     }
 
+    // MARK: - 数据静止时段的定点唤醒
+
+    /// 午休时段的定点唤醒时刻（12:00）。
+    ///
+    /// 午休（11:30-13:00）期间估值冻结，按固定间隔反复拉取只会拿到完全相同的数据，
+    /// 且每次都触发一次全量落盘。改为中午只刷新一次，随后直接排期到 13:00 下午开盘。
+    static let middayBreakWakeMinutes = 12 * 60
+
+    /// 夜间静止时段的起点（23:30）。
+    ///
+    /// 当日净值通常在 20:00-23:00 陆续公布完毕，此后至次日清晨数据不再变化。
+    /// 取 23:30 而非 23:00 是为了给较晚公布的基金留出余量。
+    static let quietPeriodStartMinutes = 23 * 60 + 30
+
+    /// 清晨静止时段的定点唤醒时刻（8:00、9:00、9:15）。
+    ///
+    /// 8:00 对应 QDII 补充数据的刷新槽（见 `PortfolioStore.supplementRefreshSlot`），
+    /// 9:00 用于开盘前预热，9:15 则直接对接集合竞价（当日的盘中估值从此刻开始产生）。
+    static let quietPeriodWakeMinutes = [8 * 60, 9 * 60, callAuctionStartMinutes]
+
+    /// 当日分钟数（0..<1440，上海时区）。
+    private static func minutesOfDay(_ date: Date) -> Int {
+        chinaCalendar.component(.hour, from: date) * 60
+            + chinaCalendar.component(.minute, from: date)
+    }
+
+    /// 构造当日某一分钟对应的时刻（上海时区）。
+    private static func timeOnDay(_ day: Date, minutes: Int) -> Date? {
+        chinaCalendar.date(
+            bySettingHour: minutes / 60,
+            minute: minutes % 60,
+            second: 0,
+            of: day
+        )
+    }
+
+    /// 午休时段的下一个唤醒时刻；当前不在午休则 nil。
+    ///
+    /// - 11:30-12:00 → 12:00（中午刷新一次）
+    /// - 12:00-13:00 → 13:00（直接排到下午开盘，不再中途空刷）
+    static func nextMiddayBreakWakeTime(after now: Date = .now) -> Date? {
+        guard marketSessionState(now: now) == .middayBreak else { return nil }
+        let minutes = minutesOfDay(now)
+        let target = minutes < middayBreakWakeMinutes ? middayBreakWakeMinutes : 13 * 60
+        guard let wake = timeOnDay(now, minutes: target), wake > now else { return nil }
+        return wake
+    }
+
+    /// 夜间/清晨静止时段（23:30 → 次日 9:15）的下一个唤醒时刻；不在该时段则 nil。
+    ///
+    /// 该窗口内数据已完全静止，按固定间隔刷新毫无收益，改为在 8:00、9:00 各刷新一次，
+    /// 9:00 之后直接排到 9:15 集合竞价——否则普通间隔会在 9:10 插入一次多余刷新。
+    static func nextQuietPeriodWakeTime(after now: Date = .now) -> Date? {
+        let minutes = minutesOfDay(now)
+        let calendar = chinaCalendar
+
+        // 23:30 之后 → 唤醒时刻落在次日
+        let isLateNight = minutes >= quietPeriodStartMinutes
+        // 0:00 - 9:15 → 唤醒时刻就在当天
+        let isEarlyMorning = minutes < callAuctionStartMinutes
+
+        guard isLateNight || isEarlyMorning else { return nil }
+
+        var day = calendar.startOfDay(for: now)
+        if isLateNight {
+            day = calendar.date(byAdding: .day, value: 1, to: day) ?? day
+        }
+
+        for target in quietPeriodWakeMinutes {
+            guard let wake = timeOnDay(day, minutes: target), wake > now else { continue }
+            return wake
+        }
+        return nil
+    }
+
+    /// 下一个「定点唤醒」时刻：用于数据静止时段替代固定刷新间隔。
+    /// 不在任何静止时段则返回 nil，调用方回退到普通间隔逻辑。
+    static func nextQuietWakeTime(after now: Date = .now) -> Date? {
+        nextMiddayBreakWakeTime(after: now) ?? nextQuietPeriodWakeTime(after: now)
+    }
+
     /// 从当前时间起，返回下一个交易时段边界（开盘/午休开始/下午开盘/收盘）。
     static func nextMarketSessionBoundary(after now: Date = .now) -> Date? {
         let calendar = chinaCalendar

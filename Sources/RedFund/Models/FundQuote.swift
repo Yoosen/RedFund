@@ -110,10 +110,16 @@ struct FundAssetAllocationItem: Identifiable, Equatable, Codable {
 
 /// 基金详情的补充数据（走势、持仓、行业、资产配置等）。
 struct FundDetailSupplement: Equatable, Codable {
-    /// 净值走势点。
-    var trend: [FundNetValuePoint]
-    /// 历史净值点。
+    /// 历史净值点（净值走势的唯一存储）。
     var history: [FundNetValuePoint]
+
+    /// 净值走势点。
+    ///
+    /// 历史实现里 `trend` 与 `history` 是两份**完全相同**的数组（写入侧各赋一次同
+    /// 一批点），占了缓存文件约 96% 体积。改为计算属性后磁盘占用减半，读取侧
+    /// `supplement.history.isEmpty ? supplement.trend : supplement.history` 的
+    /// 语义完全不变，仅解码时不再重复持有同一份数据。
+    var trend: [FundNetValuePoint] { history }
     /// 十大重仓股。
     var topHoldings: [FundStockHolding]
     /// 关联板块。
@@ -149,7 +155,6 @@ struct FundDetailSupplement: Equatable, Codable {
 
     /// 空补充数据（用于加载失败/无数据兜底）。
     static let empty = FundDetailSupplement(
-        trend: [],
         history: [],
         topHoldings: [],
         relatedSectors: [],
@@ -169,7 +174,6 @@ struct FundDetailSupplement: Equatable, Codable {
     /// 不应覆盖已展示的有效重仓数据，避免详情页核心信息闪回“暂无数据”。
     func mergingAvailableData(from next: FundDetailSupplement) -> FundDetailSupplement {
         FundDetailSupplement(
-            trend: next.trend.isEmpty ? trend : next.trend,
             history: next.history.isEmpty ? history : next.history,
             topHoldings: next.topHoldings.isEmpty ? topHoldings : next.topHoldings,
             relatedSectors: next.relatedSectors.isEmpty ? relatedSectors : next.relatedSectors,

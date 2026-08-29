@@ -33,6 +33,44 @@ enum FundIntradayRateHistoryRecorder {
         }
     }()
 
+    /// 估值时间文本 → 毫秒时间戳的解析缓存。
+    ///
+    /// `DateFormatter` 解析代价高，而盘中每 5 秒刷新会对每只基金的**每个**历史点
+    /// 反复解析同一个 `estimateTime`（去重、排序比较、`shouldRecord` 各跑一遍，
+    /// 排序比较闭包内更是 O(n log n) 次调用）。缓存后同一文本只解析一次。
+    /// 缓存键为原始文本（不足 10 位的无效/空串结果为 nil，也一并缓存）。
+    private static let estimateTimestampCache = EstimateTimestampCache()
+
+    /// 线程安全的解析缓存容器（盘中刷新在后台线程写盘时会并发读取）。
+    /// 内部已用 NSLock 保护全部读写，故声明 `@unchecked Sendable`。
+    private final class EstimateTimestampCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [String: Int64?] = [:]
+        /// 上限保护：文本种类实际有界（分钟级 × 交易日），留足冗余避免异常输入撑爆内存。
+        private let capacity = 4096
+
+        /// 查询缓存，未命中则计算并写入。
+        func value(for text: String, compute: (String) -> Int64?) -> Int64? {
+            lock.lock()
+            if let cached = storage[text] {
+                lock.unlock()
+                return cached
+            }
+            lock.unlock()
+
+            let computed = compute(text)
+
+            lock.lock()
+            if storage.count >= capacity {
+                storage.removeAll(keepingCapacity: true)
+            }
+            storage[text] = computed
+            lock.unlock()
+
+            return computed
+        }
+    }
+
     /// 将最新估值涨跌幅写入持仓的盘中历史（仅交易时段、当日未记录时）。
     static func applyingQuotes(
         to snapshot: PortfolioSnapshot,
@@ -155,17 +193,22 @@ enum FundIntradayRateHistoryRecorder {
 
     /// 将估值时间文本转换为毫秒时间戳。
     private static func quoteEstimateTimestamp(_ quote: FundQuote) -> Int64? {
-        guard let date = parseEstimateTime(quote.estimateTime) else {
-            return nil
-        }
-        return Int64((date.timeIntervalSince1970 * 1000).rounded())
+        estimateTimestampCache.value(for: quote.estimateTime, compute: parseEstimateTimestamp)
     }
 
-    /// 按多种格式尝试解析估值时间文本。
+    /// 按多种格式尝试解析估值时间文本（结果走缓存，同一文本只解析一次）。
     private static func parseEstimateTime(_ value: String) -> Date? {
+        guard let timestamp = estimateTimestampCache.value(for: value, compute: parseEstimateTimestamp) else {
+            return nil
+        }
+        return Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000)
+    }
+
+    /// 实际执行解析：按多种格式尝试，返回毫秒时间戳。
+    private static func parseEstimateTimestamp(_ value: String) -> Int64? {
         for formatter in estimateTimeParsers {
             if let date = formatter.date(from: value) {
-                return date
+                return Int64((date.timeIntervalSince1970 * 1000).rounded())
             }
         }
         return nil
@@ -190,9 +233,6 @@ enum FundIntradayRateHistoryRecorder {
 
     /// 取盘中点对应的时间戳（优先由估值时间解析，否则用记录时间戳）。
     private static func recordedEstimateTimestamp(_ point: FundIntradayRatePoint) -> Int64? {
-        if let date = parseEstimateTime(point.estimateTime) {
-            return Int64((date.timeIntervalSince1970 * 1000).rounded())
-        }
-        return point.timestamp
+        estimateTimestampCache.value(for: point.estimateTime, compute: parseEstimateTimestamp)
     }
 }

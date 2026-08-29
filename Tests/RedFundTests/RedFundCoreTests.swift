@@ -8718,7 +8718,6 @@ final class RedFundCoreTests: XCTestCase {
             changeRate: 1.2
         )
         let cached = FundDetailSupplement(
-            trend: [],
             history: [],
             topHoldings: [cachedHolding],
             relatedSectors: [],

@@ -237,9 +237,7 @@ struct AppUpdateService: Sendable {
             throw UpdateError.invalidResponse
         }
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let release = try decoder.decode(GitHubRelease.self, from: data)
+        let release = try SharedJSONCoders.iso8601Decoder.decode(GitHubRelease.self, from: data)
         guard let htmlURL = URL(string: release.htmlURL) else {
             throw UpdateError.noReleaseURL
         }

@@ -37,7 +37,7 @@ final class AppSettingsStore {
             }
             loadOrigin = .loadedExisting
             let data = try Data(contentsOf: url)
-            var decodedSettings = try JSONDecoder().decode(AppSettings.self, from: data)
+            var decodedSettings = try SharedJSONCoders.decoder.decode(AppSettings.self, from: data)
             if decodedSettings.settingsSchemaVersion != AppSettings.currentSchemaVersion {
                 decodedSettings.settingsSchemaVersion = AppSettings.currentSchemaVersion
                 settings = decodedSettings
@@ -167,9 +167,7 @@ final class AppSettingsStore {
     /// 将当前设置编码为格式化 JSON 并原子写入磁盘。
     private func save() throws {
         try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(settings)
+        let data = try SharedJSONCoders.prettyEncoder.encode(settings)
         try data.write(to: settingsFileURL, options: .atomic)
     }
 }

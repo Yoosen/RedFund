@@ -112,20 +112,125 @@ final class PortfolioStore {
     private func loadSupplementFromDisk(code: String) -> FundDetailSupplement? {
         let url = supplementFileURL(code: code)
         guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(FundDetailSupplement.self, from: data)
+        return try? SharedJSONCoders.decoder.decode(FundDetailSupplement.self, from: data)
+    }
+
+    /// 落盘时保留的净值历史年限。
+    ///
+    /// 详情页走势图最大档位为「近 3 年」（见 `FundNetValueTrendRange`），
+    /// 因此 3 年以外的历史点永远不会被展示。接口会一次返回基金成立至今的全部
+    /// 净值（实测单只可达 3000+ 点、约 200KB），全量落盘让缓存目录涨到 6MB+。
+    /// 保留 3 年并附加一段余量，既覆盖全部档位，又把单文件压到原来的 1/4。
+    private nonisolated static let persistedSupplementHistoryYears = 3
+    /// 在年限之上附加的余量（月），避免跨时区/闰年边界导致档位首日缺一个点。
+    private nonisolated static let persistedSupplementHistoryBufferMonths = 2
+
+    /// 裁剪出需要落盘的净值历史（仅保留近 N 年，永远保留最新点）。
+    /// 纯计算且无状态依赖，标记 `nonisolated` 以便在后台写盘任务中直接调用。
+    private nonisolated static func trimmingHistoryForPersistence(
+        _ points: [FundNetValuePoint],
+        now: Date = .now
+    ) -> [FundNetValuePoint] {
+        guard points.count > 1,
+              let cutoff = Calendar.current.date(
+                byAdding: .month,
+                value: -(persistedSupplementHistoryYears * 12 + persistedSupplementHistoryBufferMonths),
+                to: now
+              ) else {
+            return points
+        }
+        let cutoffTimestamp = Int64((cutoff.timeIntervalSince1970 * 1000).rounded())
+        let trimmed = points.filter { $0.timestamp >= cutoffTimestamp }
+        // 兜底：极端情况下过滤后为空（时钟异常/数据异常）时保留原始数据，
+        // 宁可多存也不要让缓存退化成「无走势」。
+        return trimmed.isEmpty ? points : trimmed
     }
 
     private func persistSupplement(_ supplement: FundDetailSupplement, for code: String) {
         let url = supplementFileURL(code: code)
         Task.detached(priority: .utility) {
             do {
-                let data = try JSONEncoder().encode(supplement)
+                // 只裁剪落盘副本：内存缓存仍持有完整序列，本次会话内切换档位不受影响。
+                var persisted = supplement
+                persisted.history = Self.trimmingHistoryForPersistence(supplement.history)
+                let data = try SharedJSONCoders.encoder.encode(persisted)
                 try data.write(to: url, options: .atomic)
             } catch {
                 // 缓存落盘失败不阻塞主流程，仅忽略。
             }
         }
     }
+
+    // MARK: - 重仓补充数据缓存回收
+
+    /// 删除某只基金的补充数据缓存（内存 + 磁盘）。
+    ///
+    /// 注意判定基准是「代码是否还在 `funds` 里」，而非「是否仍持有份额」：
+    /// 已清仓的基金仍以 `pending`/`watch` 状态留在持仓列表中供用户查看走势，
+    /// 其缓存属于有效数据，不应回收。
+    private func removeSupplement(for code: String) {
+        supplementCache.removeValue(forKey: code)
+        let url = supplementFileURL(code: code)
+        Task.detached(priority: .utility) {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    /// 删除全部补充数据缓存（内存 + 磁盘），用于「清空全部持仓」。
+    /// 与 `pruneOrphanedSupplementCaches()` 不同，这里不依赖持仓集合非空的前置条件。
+    private func removeAllSupplementCaches() {
+        supplementCache.removeAll(keepingCapacity: false)
+        let directory = dataDirectory
+        let prefix = Self.supplementFilePrefix
+        Task.detached(priority: .utility) {
+            guard let contents = try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil
+            ) else { return }
+            for url in contents where url.lastPathComponent.hasPrefix(prefix) {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+
+    /// 对账清理：删除磁盘上已不属于任何持仓的补充数据缓存。
+    ///
+    /// 覆盖删除基金之外的所有「持仓集合变小」的路径——京东同步整体替换持仓、
+    /// 导入备份覆盖、旧版本遗留、以及异常退出导致的漏删。
+    /// 清仓但仍在列表中的基金（零持仓展示）不受影响。
+    func pruneOrphanedSupplementCaches() {
+        let heldCodes = Set(snapshot.funds.map(\.code))
+        // 持仓为空时不做任何清理：可能是数据尚未加载完成，
+        // 此时误判会清空全部缓存。
+        guard !heldCodes.isEmpty else { return }
+
+        let directory = dataDirectory
+        Task.detached(priority: .utility) {
+            let contents: [URL]
+            do {
+                contents = try FileManager.default.contentsOfDirectory(
+                    at: directory,
+                    includingPropertiesForKeys: nil
+                )
+            } catch {
+                return
+            }
+            for url in contents {
+                let filename = url.lastPathComponent
+                guard filename.hasPrefix(Self.supplementFilePrefix),
+                      filename.hasSuffix(".json") else { continue }
+                let code = String(
+                    filename.dropFirst(Self.supplementFilePrefix.count)
+                        .dropLast(".json".count)
+                )
+                guard !code.isEmpty, !heldCodes.contains(code) else { continue }
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+
+    /// 补充数据缓存文件名前缀（与 `supplementFileURL` 保持一致）。
+    private nonisolated static let supplementFilePrefix = "fund-detail-supplement-"
     private(set) var dataDirectory: URL
     private let quoteService: FundQuoteService
     private let settingsStore: AppSettingsStore
@@ -139,6 +244,10 @@ final class PortfolioStore {
     private var hasDeferredQuoteRefresh = false
     /// 本轮行情刷新结束后是否需要批量补抓缺失的基金类型（由手动刷新触发）。
     private var shouldBackfillTypesAfterNextPass = false
+    /// 上次「行情刷新路径」落盘的时间，用于节流。
+    private var lastQuotePersistAt: Date?
+    /// 存在因节流而尚未落盘的快照变更（退出前/收盘时需补写）。
+    private var hasPendingQuotePersist = false
 
     /// 持仓加载状态：加载中 / 已加载 / 缺失明文数据 / 失败。
     enum LoadState: Equatable {
@@ -200,6 +309,8 @@ final class PortfolioStore {
                     try? save(migrated)
                 }
                 loadState = .loaded
+                // 对账回收：清掉删除基金/京东同步替换/导入覆盖后残留的历史缓存。
+                pruneOrphanedSupplementCaches()
                 return
             }
 
@@ -215,9 +326,7 @@ final class PortfolioStore {
 
     /// 将持仓（含收益历史）导出为 JSON 文件。
     func exportPortfolio(to url: URL) throws {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let encoder = SharedJSONCoders.iso8601PrettyEncoder
         var backup = snapshot
         backup.portfolioPerformanceHistory = try performanceStore.snapshotForExport()
         let data = try encoder.encode(backup)
@@ -227,9 +336,10 @@ final class PortfolioStore {
     /// 从 JSON 文件导入持仓与收益历史，失败则回滚到导入前状态。
     func importPortfolio(from url: URL) throws {
         let data = try Data(contentsOf: url)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        var importedSnapshot = try decoder.decode(PortfolioSnapshot.self, from: data)
+        var importedSnapshot = try SharedJSONCoders.iso8601Decoder.decode(
+            PortfolioSnapshot.self,
+            from: data
+        )
         let importedPerformance = importedSnapshot.portfolioPerformanceHistory ?? .empty
         importedSnapshot.portfolioPerformanceHistory = nil
 
@@ -241,6 +351,8 @@ final class PortfolioStore {
             try performanceStore.replace(importedPerformance)
             snapshot = importedSnapshot
             loadState = .loaded
+            // 导入会整体替换持仓集合，原持仓的补充缓存随之失效。
+            pruneOrphanedSupplementCaches()
         } catch {
             try? save(previousSnapshot)
             if !previousPerformanceWasUnreadable {
@@ -275,6 +387,8 @@ final class PortfolioStore {
         }
         snapshot = clearedSnapshot
         loadState = .loaded
+        // 持仓已全部清空，所有补充缓存随之失效。
+        removeAllSupplementCaches()
     }
 
     func refreshQuotes(backfillTypes: Bool = false) async {
@@ -366,7 +480,7 @@ final class PortfolioStore {
                 quotes: quotes
             )
             syncInitialTradeRecordsFromFunds()
-            try await persistSnapshotOffMain(snapshot)
+            try await persistSnapshotAfterQuoteRefresh(snapshot)
             recordPortfolioPerformanceIfPossible(quotes: quotes, now: now)
             loadState = .loaded
         } catch {
@@ -1260,6 +1374,7 @@ final class PortfolioStore {
             try rebuildFundPositionFromTradeRecords(code: affectedCode)
         }
 
+        removeSupplement(for: code)
         resetEmptyPortfolioAggregates(updateTime: nowProvider())
         try save(snapshot)
         await refreshQuotes()
@@ -3985,6 +4100,50 @@ final class PortfolioStore {
                 self.snapshot = persistedSnapshot
             }
             throw error
+        }
+    }
+
+    /// 行情刷新路径落盘的最小间隔（秒）。
+    ///
+    /// 盘中每 5 秒刷新都会把整个 `portfolio.json` 全量编码并原子写盘（实测 573KB，
+    /// 其中 `intradayRateHistory` 独占 260KB）。这些点位只是当日盘中采样的展示数据，
+    /// 崩溃丢失最多影响一个采样点，不值得按刷新频率重写磁盘。
+    /// 30 秒对齐「一分钟一个采样点」的展示粒度：最坏丢失一个点。
+    private static let quotePersistThrottleInterval: TimeInterval = 30
+
+    /// 行情刷新路径的落盘：按最小间隔节流，与交易时段无关。
+    ///
+    /// 节流**不区分时段**。休市间隔最小可设为 1 分钟（`AutoRefreshInterval.marketClosedIntervals`
+    /// 含 `.oneMinute`），若只在开盘节流，一晚上（15:00→次日 9:15，1095 次）
+    /// 会产生 600MB+ 的无效写入。
+    /// 默认 10 分钟间隔下（600s > 30s）本节流不触发，行为与改动前完全一致。
+    private func persistSnapshotAfterQuoteRefresh(_ snapshot: PortfolioSnapshot) async throws {
+        let now = nowProvider()
+
+        if let last = lastQuotePersistAt,
+           now.timeIntervalSince(last) < Self.quotePersistThrottleInterval {
+            // 本次变更推迟到下一个节流窗口或退出前补写。
+            hasPendingQuotePersist = true
+            return
+        }
+
+        try await persistSnapshotOffMain(snapshot)
+        lastQuotePersistAt = now
+        hasPendingQuotePersist = false
+    }
+
+    /// 补写被节流推迟的快照变更（应用退出前调用）。
+    ///
+    /// 刻意使用**同步** `save(_:)`：退出路径上异步写盘可能在进程终止前来不及完成。
+    /// 此刻已无 UI 交互，主线程编码不会造成掉帧。无待写变更时直接返回，不做多余写盘。
+    func flushPendingQuotePersistIfNeeded() {
+        guard hasPendingQuotePersist else { return }
+        do {
+            try save(snapshot)
+            lastQuotePersistAt = nowProvider()
+            hasPendingQuotePersist = false
+        } catch {
+            // 退出路径上写盘失败不阻断退出，保留 hasPendingQuotePersist 供下次尝试。
         }
     }
 

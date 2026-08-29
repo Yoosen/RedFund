@@ -193,18 +193,12 @@ final class PortfolioPerformanceStore {
         }
     }
 
-    /// 带 ISO8601 日期策略的收益快照编码器。
-    private static var encoder: JSONEncoder {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return encoder
-    }
+    /// 带 ISO8601 日期策略的收益快照编码器（共享实例，避免每次落盘重复实例化）。
+    private static let encoder = SharedJSONCoders.iso8601PrettyEncoder
 
-    /// 带 ISO8601 日期策略的收益快照解码器。
-    private static var decoder: JSONDecoder {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return decoder
-    }
+    /// 带 ISO8601 日期策略的收益快照解码器（共享实例）。
+    ///
+    /// 原先写成了计算属性（`static var encoder: JSONEncoder { ... }`），
+    /// 每次访问都新建实例，并未起到复用作用。
+    private static let decoder = SharedJSONCoders.iso8601Decoder
 }

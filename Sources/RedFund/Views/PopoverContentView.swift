@@ -7230,7 +7230,10 @@ struct FundDetailView: View {
             guard fund.intradayRateDate == FundIntradayRateHistoryRecorder.tradingDayString(from: .now) else {
                 return intradayCurrentValueFallbackPoints
             }
-            let storedPoints = (fund.intradayRateHistory ?? []).sorted { $0.timestamp < $1.timestamp }
+            // 存储序列由 `FundIntradayRateHistoryRecorder.normalizedPoints` 保证按时间升序，
+            // 无需在视图 body 里重复排序（该分支在面板可见期间会随每次求值而执行）。
+            // 下游 `intradayTrendTrailingText` 取 `.last` 本就依赖这一不变量。
+            let storedPoints = fund.intradayRateHistory ?? []
             return storedPoints.isEmpty ? intradayCurrentValueFallbackPoints : storedPoints
         }
     }
@@ -7412,7 +7415,6 @@ struct FundDetailView: View {
             async let asset = supplementService.fetchAssetAllocationSafely(code: fund.code)
             let (historyPoints, assetItems) = await (history, asset)
             merged.history = historyPoints
-            merged.trend = historyPoints
             merged.assetAllocation = assetItems
             merged.assetAllocationDate = assetItems.first?.date
             merged.yesterdayPoint = FundQuoteService.yesterdayNetValuePoint(from: historyPoints, now: .now)
