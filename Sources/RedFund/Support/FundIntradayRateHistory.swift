@@ -125,7 +125,8 @@ enum FundIntradayRateHistoryRecorder {
                 guard point.estimateTime.count >= 10 else { return false }
                 return String(point.estimateTime.prefix(10)) == tradingDay
             }
-            .sorted { $0.timestamp < $1.timestamp }
+            // 无需排序：写入侧 `normalizedPoints` 已保证按时间升序。
+            // 本方法位于视图渲染路径（面板可见时随每次刷新求值），去掉重复的 sorted。
     }
 
     /// 将日期映射为盘中历史的「有效交易日」字符串。

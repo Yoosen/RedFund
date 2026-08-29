@@ -364,8 +364,11 @@ struct SettingsView: View {
     /// “数据”分区：实验功能 / 京东会话 / 本地数据（清空持仓）。
     private var dataSettingsContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            PanelSection(title: "数据源") {
-                quoteValuationSourceSection
+            // 只有一个可用数据源时无需展示选择器（小倍养基入口由 FeatureAvailability 关闭）。
+            if FeatureAvailability.availableValuationSources.count > 1 {
+                PanelSection(title: "数据源") {
+                    quoteValuationSourceSection
+                }
             }
 
             PanelSection(title: "实验功能") {
@@ -666,7 +669,7 @@ struct SettingsView: View {
     private var quoteValuationSourceSection: some View {
         VStack(alignment: .leading, spacing: 9) {
             Picker("", selection: quoteValuationSourceBinding) {
-                ForEach(QuoteValuationSource.allCases) { source in
+                ForEach(FeatureAvailability.availableValuationSources) { source in
                     Text(source.title).tag(source)
                 }
             }

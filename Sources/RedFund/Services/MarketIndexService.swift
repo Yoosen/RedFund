@@ -25,7 +25,7 @@ struct MarketIndexService {
     private let session: URLSession
 
     /// 初始化，可注入会话。
-    init(session: URLSession = .shared) {
+    init(session: URLSession = SharedURLSession.default) {
         self.session = session
     }
 

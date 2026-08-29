@@ -22,6 +22,14 @@ final class PortfolioStore {
     /// 内存缓存 + 磁盘缓存双份：内存用于运行期快速命中，磁盘用于跨 App 重启保留。
     /// 局部请求失败返回空数据时保留上次有效值，详情页的核心重仓信息不会消失。
     @ObservationIgnored private var supplementCache: [String: FundDetailSupplement] = [:]
+    /// 内存缓存的基金数上限。
+    ///
+    /// 每份缓存含该基金的完整净值序列（接口原始可达 3000+ 点，约 90KB），
+    /// 正常持仓规模下总占用仅数 MB。设上限是防御性的：避免长期运行且持仓频繁变动时，
+    /// `supplementCache` 随浏览过的基金数无界增长。超限按最早写入顺序淘汰。
+    private static let supplementCacheCapacity = 128
+    /// 记录写入顺序用于 LRU 淘汰（数组即最简的 FIFO 队列）。
+    @ObservationIgnored private var supplementCacheOrder: [String] = []
 
     /// 重仓名单（十大重仓股、占比、相关行业）按季度披露日变化，基本只在每个季度末的
     /// 定期报告里更新。用「最近一个已过去的季度末」作为当前应生效的报告日：缓存的披露日
@@ -43,15 +51,31 @@ final class PortfolioStore {
         }
         if let fromDisk = loadSupplementFromDisk(code: code) {
             supplementCache[code] = fromDisk
+            rememberSupplementCode(code)
             return fromDisk
         }
         return nil
+    }
+
+    /// 记录一次缓存写入并在超过容量时淘汰最旧的条目。
+    private func rememberSupplementCode(_ code: String) {
+        if supplementCache[code] == nil { return }
+        if let index = supplementCacheOrder.firstIndex(of: code) {
+            supplementCacheOrder.remove(at: index)
+        }
+        supplementCacheOrder.append(code)
+
+        while supplementCacheOrder.count > Self.supplementCacheCapacity {
+            let oldest = supplementCacheOrder.removeFirst()
+            supplementCache.removeValue(forKey: oldest)
+        }
     }
 
     /// 写入某基金拉取到的重仓补充数据；仅用有效字段更新已有缓存，并落盘。
     func cacheSupplement(_ supplement: FundDetailSupplement, for code: String) {
         let merged = supplementCache[code]?.mergingAvailableData(from: supplement) ?? supplement
         supplementCache[code] = merged
+        rememberSupplementCode(code)
         persistSupplement(merged, for: code)
     }
 
@@ -170,6 +194,7 @@ final class PortfolioStore {
     /// 其缓存属于有效数据，不应回收。
     private func removeSupplement(for code: String) {
         supplementCache.removeValue(forKey: code)
+        supplementCacheOrder.removeAll { $0 == code }
         let url = supplementFileURL(code: code)
         Task.detached(priority: .utility) {
             try? FileManager.default.removeItem(at: url)
@@ -180,6 +205,7 @@ final class PortfolioStore {
     /// 与 `pruneOrphanedSupplementCaches()` 不同，这里不依赖持仓集合非空的前置条件。
     private func removeAllSupplementCaches() {
         supplementCache.removeAll(keepingCapacity: false)
+        supplementCacheOrder.removeAll(keepingCapacity: false)
         let directory = dataDirectory
         let prefix = Self.supplementFilePrefix
         Task.detached(priority: .utility) {
@@ -459,7 +485,7 @@ final class PortfolioStore {
         }
 
         do {
-            let valuationSource = settingsStore.settings.quoteValuationSource
+            let valuationSource = FeatureAvailability.resolved(settingsStore.settings.quoteValuationSource)
             let quotes = await quoteService.fetchQuotes(
                 codes: codes,
                 valuationSource: valuationSource
@@ -470,14 +496,27 @@ final class PortfolioStore {
             await processPendingPositions(quotes: quotes)
             let now = nowProvider()
             let calculatedSnapshot = PortfolioCalculator.applyingQuotes(to: snapshot, quotes: quotes, now: now)
-            snapshot = FundIntradayRateHistoryRecorder.applyingQuotes(
+            // 顺序要点：**先**配对估值准确率，**再**重置盘中历史。
+            //
+            // `FundIntradayRateHistoryRecorder.applyingQuotes` 会在交易日切换时
+            // 把 `intradayRateHistory` 清空（`resetIfNeeded`）。若让它先跑，
+            // 上一交易日的盘中采样点在次日首次刷新时就已永久丢失。
+            //
+            // 而估值准确率的配对要求 `quote.netValueDate == intradayRateDate`
+            // （净值已公布），净值通常在 20:00-23:00 才出来——一旦当晚未刷新
+            // （合盖、关机、或刷新早于公布），该交易日的数据就再也采不到。
+            //
+            // 对调后，次日首次刷新时 `quote.netValueDate` 恰为上一交易日、
+            // 与尚未被清空的 `intradayRateDate` 相等，正好构成补采窗口。
+            // 录制器内部按 date 去重，昨晚已成功配对的不会重复写入。
+            let withDeviation = EstimationDeviationRecorder.applyingConfirmedDeviation(
                 to: calculatedSnapshot,
+                quotes: quotes
+            )
+            snapshot = FundIntradayRateHistoryRecorder.applyingQuotes(
+                to: withDeviation,
                 quotes: quotes,
                 now: now
-            )
-            snapshot = EstimationDeviationRecorder.applyingConfirmedDeviation(
-                to: snapshot,
-                quotes: quotes
             )
             syncInitialTradeRecordsFromFunds()
             try await persistSnapshotAfterQuoteRefresh(snapshot)
@@ -3857,9 +3896,21 @@ final class PortfolioStore {
     }
 
     private func syncInitialTradeRecordsFromFunds() {
-        guard var records = snapshot.tradeRecords, !records.isEmpty else {
+        guard let existingRecords = snapshot.tradeRecords, !existingRecords.isEmpty else {
             return
         }
+        // 快速路径：本函数只负责给「新建持仓」的已确认记录回填份额/单价/收益，
+        // 一旦补齐（三者均非空）后续刷新将恒为空转。此处先做一次廉价的短路扫描，
+        // 避免每轮刷新都构建 fundsByCode 字典并全量遍历（位于 5 秒刷新的热路径上）。
+        let hasPendingBackfill = existingRecords.contains { record in
+            record.kind == .newFund
+                && record.status == .confirmed
+                && record.mode == .amount
+                && (record.confirmedShares == nil || record.price == nil || record.profit == nil)
+        }
+        guard hasPendingBackfill else { return }
+
+        var records = existingRecords
         var didChange = false
         let fundsByCode = Dictionary(uniqueKeysWithValues: snapshot.funds.map { ($0.code, $0) })
         for index in records.indices {

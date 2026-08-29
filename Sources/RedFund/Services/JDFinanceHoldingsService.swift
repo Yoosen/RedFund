@@ -36,7 +36,7 @@ struct JDFinanceHoldingsService: Sendable {
     private let networkProbe: JDFinanceNetworkProbe?
 
     /// 初始化：可注入自定义 `URLSession` 与网络探测器。
-    init(session: URLSession = .shared, networkProbe: JDFinanceNetworkProbe? = nil) {
+    init(session: URLSession = SharedURLSession.default, networkProbe: JDFinanceNetworkProbe? = nil) {
         self.session = session
         self.networkProbe = networkProbe
     }

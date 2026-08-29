@@ -65,7 +65,7 @@ struct AppUpdateService: Sendable {
 
     /// 初始化，可注入会话与各阶段超时。
     init(
-        session: URLSession = .shared,
+        session: URLSession = SharedURLSession.default,
         interactiveAPIRequestTimeout: TimeInterval = 5,
         releaseFeedRequestTimeout: TimeInterval = 4,
         backgroundAPIRequestTimeout: TimeInterval = 8

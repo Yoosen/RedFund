@@ -146,11 +146,15 @@ enum TradingCalendar {
     /// 且每次都触发一次全量落盘。改为中午只刷新一次，随后直接排期到 13:00 下午开盘。
     static let middayBreakWakeMinutes = 12 * 60
 
-    /// 夜间静止时段的起点（23:30）。
+    /// 夜间静止时段的起点（次日 0:30）。
     ///
-    /// 当日净值通常在 20:00-23:00 陆续公布完毕，此后至次日清晨数据不再变化。
-    /// 取 23:30 而非 23:00 是为了给较晚公布的基金留出余量。
-    static let quietPeriodStartMinutes = 23 * 60 + 30
+    /// 起点**必须晚于当日净值公布时段的末尾**。基金净值通常在 20:00-23:00 陆续公布，
+    /// 但部分基金（尤其 QDII、指数型）可能延迟到 23:00 之后甚至跨零点才出。
+    /// 而「估值准确率」的配对依赖当晚刷到 `quote.netValueDate == intradayRateDate`
+    /// 这一瞬间（见 `EstimationDeviationRecorder.applyingConfirmedDeviation`），
+    /// 一旦把起点提前到 23:30，这些晚公布基金的准确率数据将永远采集不到。
+    /// 取次日 0:30 以覆盖跨零点的情况。
+    static let quietPeriodStartMinutes = 30
 
     /// 清晨静止时段的定点唤醒时刻（8:00、9:00、9:15）。
     ///
@@ -186,17 +190,23 @@ enum TradingCalendar {
         return wake
     }
 
-    /// 夜间/清晨静止时段（23:30 → 次日 9:15）的下一个唤醒时刻；不在该时段则 nil。
+    /// 夜间/清晨静止时段（次日 0:30 → 当日 9:15）的下一个唤醒时刻；不在该时段则 nil。
     ///
     /// 该窗口内数据已完全静止，按固定间隔刷新毫无收益，改为在 8:00、9:00 各刷新一次，
     /// 9:00 之后直接排到 9:15 集合竞价——否则普通间隔会在 9:10 插入一次多余刷新。
+    ///
+    /// 起点刻意取在次日 0:30 而非前一天的 23:30：净值公布可持续到 23:00 之后甚至
+    /// 跨零点，而「估值准确率」的配对必须在当晚刷到净值公布的那一刻
+    /// （见 `EstimationDeviationRecorder.applyingConfirmedDeviation`），
+    /// 提前进入静止窗口会让晚公布基金永久采不到数据。
     static func nextQuietPeriodWakeTime(after now: Date = .now) -> Date? {
         let minutes = minutesOfDay(now)
         let calendar = chinaCalendar
 
-        // 23:30 之后 → 唤醒时刻落在次日
-        let isLateNight = minutes >= quietPeriodStartMinutes
-        // 0:00 - 9:15 → 唤醒时刻就在当天
+        // 0:00 - 0:30 仍属「前一晚的净值公布尾巴」 → 唤醒时刻落在次日
+        // （此时已过零点，但留出余量等跨零点公布的净值）
+        let isLateNight = minutes < quietPeriodStartMinutes
+        // 0:30 - 9:15 → 数据已静止，唤醒时刻就在当天
         let isEarlyMorning = minutes < callAuctionStartMinutes
 
         guard isLateNight || isEarlyMorning else { return nil }

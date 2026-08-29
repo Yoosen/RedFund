@@ -16187,6 +16187,23 @@ final class RedFundCoreTests: XCTestCase {
         XCTAssertTrue(result.funds[0].intradayRateHistory?.isEmpty ?? true)
     }
 
+    /// 构造带完整乱序盘中采样点的持仓（供多点位录制用例使用）。
+    private static func makeUnorderedIntradayFund(points: [FundIntradayRatePoint]) -> FundPosition {
+        FundPosition(
+            code: Self.tradeTestCode,
+            name: Self.tradeTestName,
+            dateText: "06-24 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingRate: nil,
+            status: .holding,
+            isUpdated: false,
+            intradayRateDate: "2026-06-24",
+            intradayRateHistory: points,
+            estimationDeviationHistory: nil
+        )
+    }
+
     /// 构造带近 30 天误差历史与盘中采样点的持仓，供估值准确率录制测试使用。
     private func makeEstimateHistoryFund(
         deviationHistory: [EstimationDeviation]? = nil,
@@ -16248,6 +16265,169 @@ final class RedFundCoreTests: XCTestCase {
         XCTAssertEqual(devs[0].estimatedRate, 1.25)
         XCTAssertEqual(devs[0].actualRate, 1.00)
         XCTAssertEqual(devs[0].absoluteDeviation, 0.25, accuracy: 1e-9)
+    }
+
+    /// 盘中采样点乱序存放时，配对应取「时间最晚」的那一个点的估值涨跌幅。
+    ///
+    /// 录制器取末点曾实现为 `points.sorted(by:).last`（O(n log n)，位于逐基金刷新
+    /// 热路径），现改为 `points.max(by:)`（O(n)）。本用例锁定二者在**多点位**场景下
+    /// 语义等价——既有的其他用例都只构造了单元素数组，覆盖不到这一点。
+    func testEstimationDeviationUsesLatestPointWhenHistoryUnordered() throws {
+        let now = try chinaDate("2026-06-24 20:00")
+        // 故意乱序：最晚的点（14:50, rate 1.25）放在数组中间。
+        let points = [
+            FundIntradayRatePoint(
+                timestamp: Int64(try chinaDate("2026-06-24 10:30").timeIntervalSince1970 * 1000),
+                rate: 0.80,
+                estimateTime: "2026-06-24 10:30"
+            ),
+            FundIntradayRatePoint(
+                timestamp: Int64(try chinaDate("2026-06-24 14:50").timeIntervalSince1970 * 1000),
+                rate: 1.25,
+                estimateTime: "2026-06-24 14:50"
+            ),
+            FundIntradayRatePoint(
+                timestamp: Int64(try chinaDate("2026-06-24 11:15").timeIntervalSince1970 * 1000),
+                rate: 0.95,
+                estimateTime: "2026-06-24 11:15"
+            )
+        ]
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [Self.makeUnorderedIntradayFund(points: points)],
+            migration: nil
+        )
+        let quote = FundQuote(
+            code: Self.tradeTestCode,
+            name: Self.tradeTestName,
+            netValue: 2,
+            estimatedNetValue: 2.02,
+            growthRate: 1.00,
+            estimateTime: "2026-06-24 15:00",
+            netValueDate: "2026-06-24"
+        )
+
+        let result = EstimationDeviationRecorder.applyingConfirmedDeviation(
+            to: snapshot,
+            quotes: [Self.tradeTestCode: quote]
+        )
+
+        let devs: [EstimationDeviation] = try XCTUnwrap(result.funds[0].estimationDeviationHistory)
+        XCTAssertEqual(devs.count, 1)
+        // 取到的必须是 14:50 的点（rate 1.25），而非数组末位的 11:15（rate 0.95）。
+        XCTAssertEqual(devs[0].estimatedRate, 1.25, accuracy: 1e-9)
+        XCTAssertEqual(devs[0].absoluteDeviation, 0.25, accuracy: 1e-9)
+    }
+
+    /// 次日首次刷新时，补采上一交易日的估值准确率。
+    ///
+    /// 净值在 20:00-23:00 才公布，若当晚未刷新（合盖/关机），原本该交易日的数据
+    /// 就永久丢失。修复方式是让 `applyingConfirmedDeviation` **先于**
+    /// `FundIntradayRateHistoryRecorder.applyingQuotes` 执行：次日刷新时官方净值日期
+    /// 仍是上一交易日，与尚未被 `resetIfNeeded` 清空的 `intradayRateDate` 相等，
+    /// 构成补采窗口。本用例锁定这一顺序语义（见 `PortfolioStore.performRefreshPass`）。
+    func testBackfillsPreviousDayDeviationOnNextMorningRefresh() throws {
+        let lastPoint = FundIntradayRatePoint(
+            timestamp: Int64(try chinaDate("2026-06-24 14:50").timeIntervalSince1970 * 1000),
+            rate: 1.25,
+            estimateTime: "2026-06-24 14:50"
+        )
+        let snapshot = PortfolioSnapshot(
+            updateTime: try chinaDate("2026-06-24 15:00"),
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [Self.makeUnorderedIntradayFund(points: [lastPoint])],
+            migration: nil
+        )
+        // 次日 09:30：官方净值日期仍停留在 06-24（当日净值尚未公布）。
+        let quote = FundQuote(
+            code: Self.tradeTestCode,
+            name: Self.tradeTestName,
+            netValue: 2,
+            estimatedNetValue: 2.02,
+            growthRate: 1.00,
+            estimateTime: "2026-06-25 09:30",
+            netValueDate: "2026-06-24"
+        )
+        let nextMorning = try chinaDate("2026-06-25 09:30")
+
+        // 新顺序：先配对（昨日盘中数据仍在），再重置盘中历史。
+        let withDeviation = EstimationDeviationRecorder.applyingConfirmedDeviation(
+            to: snapshot,
+            quotes: [Self.tradeTestCode: quote]
+        )
+        let final = FundIntradayRateHistoryRecorder.applyingQuotes(
+            to: withDeviation,
+            quotes: [Self.tradeTestCode: quote],
+            now: nextMorning
+        )
+
+        let devs = try XCTUnwrap(final.funds[0].estimationDeviationHistory)
+        XCTAssertEqual(devs.count, 1)
+        XCTAssertEqual(devs[0].date, "2026-06-24")
+        XCTAssertEqual(devs[0].estimatedRate, 1.25, accuracy: 1e-9)
+        XCTAssertEqual(devs[0].actualRate, 1.0, accuracy: 1e-9)
+        XCTAssertEqual(devs[0].absoluteDeviation, 0.25, accuracy: 1e-9)
+        // 补采完成后，交易日仍应正常切换到 06-25。
+        XCTAssertEqual(final.funds[0].intradayRateDate, "2026-06-25")
+    }
+
+    /// 反向锁定：若把顺序换回「先重置盘中历史、再配对」，补采将丢失。
+    ///
+    /// 记录这条已知的错误行为，防止后续重构无意间把两个录制器调换回去。
+    func testReversingRecorderOrderWouldDropPreviousDayDeviation() throws {
+        let lastPoint = FundIntradayRatePoint(
+            timestamp: Int64(try chinaDate("2026-06-24 14:50").timeIntervalSince1970 * 1000),
+            rate: 1.25,
+            estimateTime: "2026-06-24 14:50"
+        )
+        let snapshot = PortfolioSnapshot(
+            updateTime: try chinaDate("2026-06-24 15:00"),
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [Self.makeUnorderedIntradayFund(points: [lastPoint])],
+            migration: nil
+        )
+        let quote = FundQuote(
+            code: Self.tradeTestCode,
+            name: Self.tradeTestName,
+            netValue: 2,
+            estimatedNetValue: 2.02,
+            growthRate: 1.00,
+            estimateTime: "2026-06-25 09:30",
+            netValueDate: "2026-06-24"
+        )
+        let nextMorning = try chinaDate("2026-06-25 09:30")
+
+        // 旧顺序：先重置（清空 intradayRateHistory），再配对 → 采不到。
+        let reset = FundIntradayRateHistoryRecorder.applyingQuotes(
+            to: snapshot,
+            quotes: [Self.tradeTestCode: quote],
+            now: nextMorning
+        )
+        let final = EstimationDeviationRecorder.applyingConfirmedDeviation(
+            to: reset,
+            quotes: [Self.tradeTestCode: quote]
+        )
+
+        XCTAssertNil(
+            final.funds[0].estimationDeviationHistory,
+            "旧顺序会丢掉上一交易日的准确率数据——这正是需要对调顺序的原因"
+        )
     }
 
     /// 盘中当日净值尚未公布（官方净值日期仍停留在上一交易日）时不会配对，

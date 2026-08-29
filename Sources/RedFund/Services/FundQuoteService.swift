@@ -20,7 +20,7 @@ struct FundQuoteService {
     private let session: URLSession
 
     /// 初始化，可注入会话。
-    init(session: URLSession = .shared) {
+    init(session: URLSession = SharedURLSession.default) {
         self.session = session
     }
 
@@ -44,7 +44,7 @@ struct FundQuoteService {
         let quotes = await fetchCoreQuotesWithFallback(uniqueCodes)
         // 盘中估值优先于核心行情接口；估值接口常返回空估值（null），此时保留核心行情原值。
         let valuations: [String: FundValuationLastPayload]
-        switch valuationSource {
+        switch FeatureAvailability.resolved(valuationSource) {
         case .eastmoney:
             valuations = await fetchValuationLastQuotes(codes: uniqueCodes)
         case .xiaobei:

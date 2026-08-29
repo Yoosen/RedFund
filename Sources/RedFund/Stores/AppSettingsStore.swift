@@ -49,6 +49,15 @@ final class AppSettingsStore {
             loadOrigin = .recoveredInvalid
             settings = AppSettings()
         }
+        applyDisabledFeatureFallbacksIfNeeded()
+    }
+
+    /// 把已关闭功能的残留设置值回落为默认值并写盘。
+    /// 覆盖「入口关闭前已选择小倍养基」的存量用户，避免设置页无法改回却仍在走该数据源。
+    private func applyDisabledFeatureFallbacksIfNeeded() {
+        guard !FeatureAvailability.isAvailable(settings.quoteValuationSource) else { return }
+        settings.quoteValuationSource = FeatureAvailability.resolved(settings.quoteValuationSource)
+        try? save()
     }
 
     /// 标记新手引导已完成，并记录对应的引导版本号。
@@ -153,9 +162,9 @@ final class AppSettingsStore {
         try? save()
     }
 
-    /// 设置盘中估值数据源（东方财富 / 小倍养基）。
+    /// 设置盘中估值数据源（东方财富 / 小倍养基）；不可用的数据源会被回落到东方财富。
     func setQuoteValuationSource(_ source: QuoteValuationSource) {
-        settings.quoteValuationSource = source
+        settings.quoteValuationSource = FeatureAvailability.resolved(source)
         try? save()
     }
 

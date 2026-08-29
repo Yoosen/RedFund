@@ -40,7 +40,7 @@ enum XiaobeiQuoteService {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         request.timeoutInterval = 15
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await SharedURLSession.default.data(for: request)
         if let http = response as? HTTPURLResponse,
            !(200...299).contains(http.statusCode) {
             throw NSError(

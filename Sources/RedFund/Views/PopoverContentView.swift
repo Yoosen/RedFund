@@ -2306,21 +2306,20 @@ struct PopoverContentView: View {
         let funds: [FundPosition]
         let tradeRecords: [FundTradeRecord]
         let pendingActivities: [PendingTradeActivity]
-
-        var pendingActivityIDs: [String] {
-            pendingActivities.map(\.id)
-        }
-
-        var pendingHeaderImpact: PendingHeaderImpact? {
-            PendingHeaderImpact.make(activities: pendingActivities)
-        }
+        /// 预计算的派生值：二者在一次 body 求值内会被多处访问
+        ///（`pendingActivityIDs` 有 4 处），存下来避免重复 map / 重复构建。
+        let pendingActivityIDs: [String]
+        let pendingHeaderImpact: PendingHeaderImpact?
     }
 
     private func makeDerivedListContent() -> DerivedListContent {
-        DerivedListContent(
+        let pendingActivities = PendingTradeActivityBuilder.make(from: store.snapshot)
+        return DerivedListContent(
             funds: store.snapshot.funds,
             tradeRecords: store.snapshot.tradeRecords ?? [],
-            pendingActivities: PendingTradeActivityBuilder.make(from: store.snapshot)
+            pendingActivities: pendingActivities,
+            pendingActivityIDs: pendingActivities.map(\.id),
+            pendingHeaderImpact: PendingHeaderImpact.make(activities: pendingActivities)
         )
     }
 
@@ -6458,10 +6457,10 @@ struct FundDetailView: View {
 
             netValueTrendRangePicker
 
-            if !historyRows.isEmpty || isSupplementLoading {
-                Divider().opacity(0.45)
-                historyList
-            }
+            Divider().opacity(0.45)
+            // 历史净值独立成 View：展开状态与筛选结果都由它自己持有，
+            // 展开/收起不会牵动本页 body 的走势图等重计算区块。
+            FundHistoryNetValueList(points: supplement.history, isLoading: isSupplementLoading)
         }
     }
 
@@ -6495,37 +6494,6 @@ struct FundDetailView: View {
     private func parseSignedPercent(_ text: String) -> Double {
         let cleaned = text.replacingOccurrences(of: "%", with: "")
         return Double(cleaned) ?? 0
-    }
-
-    private var historyList: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("历史净值", trailing: historyTrailingText, showsLoading: isSupplementLoading)
-
-            if historyRows.isEmpty {
-                emptySupplementView(isSupplementLoading ? "净值加载中..." : "暂无历史净值")
-                    .frame(height: 74)
-            } else {
-                VStack(spacing: 0) {
-                    HStack {
-                        historyHeader("日期", alignment: .leading)
-                        historyHeader("净值", alignment: .center)
-                        historyHeader("日涨幅", alignment: .trailing)
-                    }
-                    .frame(height: 26)
-
-                    Divider().opacity(0.45)
-
-                    VStack(spacing: 0) {
-                        ForEach(Array(historyRows.enumerated()), id: \.element.id) { index, point in
-                            historyRow(point)
-                            if index < historyRows.count - 1 {
-                                Divider().opacity(0.34)
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 
     /// 前10重仓股：抽成独立子 View 并遵循 Equatable，仅依赖 topHoldings 数组本身。
@@ -7012,28 +6980,6 @@ struct FundDetailView: View {
         return count > 0 ? "\(count)" : nil
     }
 
-    private func historyHeader(_ title: String, alignment: Alignment) -> some View {
-        Text(title)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: alignment)
-    }
-
-    private func historyRow(_ point: FundNetValuePoint) -> some View {
-        HStack(spacing: 8) {
-            Text(dateText(point.timestamp, format: "yyyy-MM-dd"))
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Text(numberText(point.value, places: 4))
-                .frame(maxWidth: .infinity, alignment: .center)
-            Text(point.equityReturn.map { MoneyFormatter.percent($0, signed: true) } ?? "--")
-                .foregroundStyle(point.equityReturn.map(toneColor(for:)) ?? Color.secondary)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-        }
-        .font(.system(size: 11, weight: .medium))
-        .monospacedDigit()
-        .frame(height: 34)
-    }
-
     private func stockHoldingRow(_ holding: FundStockHolding, rank: Int) -> some View {
         HStack(spacing: 8) {
             Text("\(rank)")
@@ -7275,27 +7221,6 @@ struct FundDetailView: View {
             return Int64((parsedDate.timeIntervalSince1970 * 1000).rounded())
         }
         return Int64((Date().timeIntervalSince1970 * 1000).rounded())
-    }
-
-    private var historyTrailingText: String? {
-        historyRows.isEmpty ? "近1月" : "近1月 · \(historyRows.count)条"
-    }
-
-    private var historyRows: [FundNetValuePoint] {
-        let sortedRows = supplement.history.sorted { $0.timestamp > $1.timestamp }
-        guard let latestTimestamp = sortedRows.first?.timestamp else {
-            return []
-        }
-        let calendar = Calendar.current
-        let latestDate = Date(timeIntervalSince1970: TimeInterval(latestTimestamp) / 1000)
-        let latestDay = calendar.startOfDay(for: latestDate)
-        guard let cutoff = calendar.date(byAdding: .day, value: -30, to: latestDay) else {
-            return sortedRows
-        }
-        return sortedRows.filter { point in
-            let date = Date(timeIntervalSince1970: TimeInterval(point.timestamp) / 1000)
-            return calendar.startOfDay(for: date) >= cutoff
-        }
     }
 
     private var holdingDaysText: String {
@@ -8890,6 +8815,188 @@ private extension PositionTimeType {
         case .after15:
             1
         }
+    }
+}
+
+// MARK: - 历史净值列表
+
+/// 详情页「历史净值」区块：默认展示最近 7 条，点「查看更多」展开近 1 月全量。
+///
+/// 刻意独立成 View 并自持 `isExpanded` 与筛选结果 `rows`：
+///
+/// 1. **展开状态**：若 `isExpanded` 放在 `FundDetailView` 上，每次点按都会重算整个详情页
+///    body——净值走势图、盘中曲线、重仓股、交易记录全部重建，`supplement.history`
+///    （老基金可达 3000+ 点）会被重复 sort / filter 多次，肉眼可见卡顿。
+///    状态下沉后，点按只重算本 View（量级 20 余行）。
+///
+/// 2. **筛选结果缓存**：`rows` 只在净值序列变化时算一次。详情页 body 每 5 秒随行情重算，
+///    若把筛选写成 computed property，`sorted` 与 `filter` 里的 `Calendar.startOfDay`
+///    （逐点调用，比纯数值比较贵 1~2 个数量级）会每轮跑上数千次。
+///
+/// 本 View 刻意**不**遵循 Equatable：入参是可能长达数千点的原始数组，等值比较本身就要
+/// 遍历全量元素，比直接重算 body（此时只读已缓存的 20 余行）更贵。
+private struct FundHistoryNetValueList: View {
+    /// 该基金的完整净值序列（接口原始可达 3000+ 点）。
+    let points: [FundNetValuePoint]
+    let isLoading: Bool
+
+    /// 折叠态展示条数。
+    private static let collapsedCount = 7
+    /// 纳入列表的时间窗口（天）。
+    private static let windowDays = 30
+
+    /// 窗口内的净值点，按时间倒序。仅在 `points` 变化时重算。
+    @State private var rows: [FundNetValuePoint] = []
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            header
+
+            if rows.isEmpty {
+                Text(isLoading ? "净值加载中..." : "暂无历史净值")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(height: 74)
+                    .background(
+                        PanelDesign.selectorBackground.opacity(0.55),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
+            } else {
+                VStack(spacing: 0) {
+                    columnHeader
+                    Divider().opacity(0.45)
+                    rowList
+                    if rows.count > Self.collapsedCount {
+                        expandToggle
+                    }
+                }
+            }
+        }
+        // 净值序列加载/刷新后重算窗口。`initial: true` 保证首帧即有数据，不闪加载态。
+        //
+        // key 用「条数 + 最新时间戳」而非数组本身：数组等值比较要遍历数千元素，
+        // 而这两个标量是 O(1) 比较。仅用条数会漏掉「同一天重复拉取、条数不变但
+        // 最新净值已更新」的情况。
+        .onChange(of: Self.dataFingerprint(of: points), initial: true) { _, _ in
+            rows = Self.recentRows(from: points)
+        }
+    }
+
+    /// 净值序列的廉价指纹，用于判断是否需要重算窗口。
+    private static func dataFingerprint(of points: [FundNetValuePoint]) -> DataFingerprint {
+        DataFingerprint(
+            count: points.count,
+            latestTimestamp: points.max(by: { $0.timestamp < $1.timestamp })?.timestamp ?? 0
+        )
+    }
+
+    /// 见 `dataFingerprint`。用结构体而非元组——元组无法遵循 `Equatable`，
+    /// 而 `onChange(of:)` 要求该约束。
+    private struct DataFingerprint: Equatable {
+        let count: Int
+        let latestTimestamp: Int64
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text("历史净值")
+                .font(.system(size: 12, weight: .semibold))
+            Spacer()
+            // 统计始终按窗口内全量条数显示，避免折叠时误以为只有 7 条。
+            Text(rows.isEmpty ? "近1月" : "近1月 · \(rows.count)条")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+            if isLoading {
+                ProgressView().controlSize(.small).scaleEffect(0.6)
+            }
+        }
+    }
+
+    private var columnHeader: some View {
+        HStack {
+            columnTitle("日期", alignment: .leading)
+            columnTitle("净值", alignment: .center)
+            columnTitle("日涨幅", alignment: .trailing)
+        }
+        .frame(height: 26)
+    }
+
+    private func columnTitle(_ title: String, alignment: Alignment) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: alignment)
+    }
+
+    private var rowList: some View {
+        let visible = isExpanded ? rows : Array(rows.prefix(Self.collapsedCount))
+        return VStack(spacing: 0) {
+            ForEach(Array(visible.enumerated()), id: \.element.id) { index, point in
+                row(point)
+                if index < visible.count - 1 {
+                    Divider().opacity(0.34)
+                }
+            }
+        }
+    }
+
+    private func row(_ point: FundNetValuePoint) -> some View {
+        HStack(spacing: 8) {
+            Text(dateText(point.timestamp))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(point.value.formatted(.number.precision(.fractionLength(4))))
+                .frame(maxWidth: .infinity, alignment: .center)
+            Text(point.equityReturn.map { MoneyFormatter.percent($0, signed: true) } ?? "--")
+                .foregroundStyle(point.equityReturn.map(toneColor(for:)) ?? Color.secondary)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .font(.system(size: 11, weight: .medium))
+        .monospacedDigit()
+        .frame(height: 34)
+    }
+
+    private var expandToggle: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.16)) {
+                isExpanded.toggle()
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(isExpanded ? "收起" : "查看更多")
+                    .font(.system(size: 11, weight: .medium))
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 30)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .foregroundStyle(.secondary)
+        .help(isExpanded ? "收起历史净值" : "展开近1月全部历史净值")
+    }
+
+    private func dateText(_ timestamp: Int64) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000)
+        return FundDetailDateFormatting.string(from: date, format: "yyyy-MM-dd")
+    }
+
+    /// 取最近 `windowDays` 天内的净值点，按时间倒序。
+    private static func recentRows(from points: [FundNetValuePoint]) -> [FundNetValuePoint] {
+        guard let latestTimestamp = points.max(by: { $0.timestamp < $1.timestamp })?.timestamp else {
+            return []
+        }
+        // 窗口按毫秒直接比较，避免对每个点调用 `Calendar.startOfDay`（数千次调用，
+        // 是这段筛选的主要开销）。与原先按自然日对齐的口径略有差异，但列表只按
+        // 交易日呈现净值点，实际结果一致。
+        let cutoff = latestTimestamp - Int64(Self.windowDays) * 86_400_000
+        return points
+            .filter { $0.timestamp >= cutoff }
+            .sorted { $0.timestamp > $1.timestamp }
     }
 }
 
