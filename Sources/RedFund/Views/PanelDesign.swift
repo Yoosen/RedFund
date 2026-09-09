@@ -295,6 +295,14 @@ struct PanelLinkButton: View {
     }
 }
 
+/// `PanelSegmentedPicker` 的按钮宽度策略。
+enum PanelSegmentedPickerWidthMode {
+    /// 所有按钮等宽填满胶囊壳（默认，兼容旧用法）。
+    case equal
+    /// 按钮按标题字数紧凑排列，左对齐；胶囊壳外部若未撑满，会自然留出右侧空白。
+    case content
+}
+
 struct PanelSegmentedPicker<Value: Hashable & Identifiable>: View {
     let values: [Value]
     @Binding var selection: Value
@@ -304,11 +312,16 @@ struct PanelSegmentedPicker<Value: Hashable & Identifiable>: View {
     /// 是否启用左右方向键导航。菜单栏 App 中某些场景下焦点会自动落在选择器上，
     /// 持续的方向键事件会导致选中项反复跳变，此时应关闭。
     var enableArrowNavigation: Bool = true
+    /// 按钮宽度策略：
+    /// - `.equal`（默认）：所有按钮均分胶囊壳宽度，等宽填满（兼容旧用法）。
+    /// - `.content`：按钮按标题字数紧凑排列，左对齐；
+    ///   胶囊壳若设了 maxWidth: .infinity 会留出右侧空白，保持与卡片其他元素对齐。
+    var widthMode: PanelSegmentedPickerWidthMode = .equal
 
     /// 胶囊式分段选择器：点击切换选中并高亮，支持左右方向键导航。
     var body: some View {
-        HStack(spacing: 4) {
-            ForEach(values) { value in
+        HStack(spacing: widthMode == .content ? 0 : 4) {
+            ForEach(Array(values.enumerated()), id: \.element.id) { index, value in
                 let isSelected = selection == value
                 Button {
                     selection = value
@@ -316,7 +329,8 @@ struct PanelSegmentedPicker<Value: Hashable & Identifiable>: View {
                     Text(title(value))
                         .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
                         .foregroundStyle(isSelected ? tint : Color.primary.opacity(0.78))
-                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, widthMode == .content ? 12 : 0)
+                        .frame(maxWidth: widthMode == .equal ? .infinity : nil)
                         .frame(height: 28)
                         .background {
                             Capsule()
@@ -335,8 +349,14 @@ struct PanelSegmentedPicker<Value: Hashable & Identifiable>: View {
                 .focusable(false)
                 .accessibilityLabel(title(value))
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
+
+                // content 模式：按钮按文字定宽，用 Spacer 均匀铺开（两端对齐）。
+                if widthMode == .content, index < values.count - 1 {
+                    Spacer()
+                }
             }
         }
+        .frame(maxWidth: widthMode == .equal ? nil : .infinity, alignment: .leading)
         .padding(2)
         .background(PanelDesign.selectorBackground, in: Capsule())
         .overlay {

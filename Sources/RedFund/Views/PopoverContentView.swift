@@ -5648,6 +5648,7 @@ private struct UpdatedFundStarShape: Shape {
 private enum FundDetailTrendTab: String, CaseIterable, Identifiable {
     case intraday
     case netValue
+    case band
 
     var id: String { rawValue }
 
@@ -5657,6 +5658,8 @@ private enum FundDetailTrendTab: String, CaseIterable, Identifiable {
             "盘中预估实时涨跌"
         case .netValue:
             "净值业绩走势"
+        case .band:
+            "波段信号"
         }
     }
 }
@@ -6300,7 +6303,8 @@ struct FundDetailView: View {
                 values: FundDetailTrendTab.allCases,
                 selection: $trendTab,
                 title: \.title,
-                tint: toneColor(for: fund.todayRate)
+                tint: toneColor(for: fund.todayRate),
+                widthMode: .content
             )
 
             switch trendTab {
@@ -6308,6 +6312,8 @@ struct FundDetailView: View {
                 intradayTrendContent
             case .netValue:
                 netValueTrendContent
+            case .band:
+                bandSignalContent
             }
         }
         .padding(12)
@@ -6892,6 +6898,83 @@ struct FundDetailView: View {
             return calendar.startOfDay(for: pointDate) >= cutoff
         }
     }
+
+    /// 波段信号·净值序列（含可能拼接的当日盘中估值）。
+    ///
+    /// 序列口径：**直接使用单位净值（单位净值）**，与 fund.cc.cd 权威实现一致——
+    /// 其信号函数 `s(e)` 读取 `e.value`（原始净值），`netValueType:"adjusted"`
+    /// 仅用于填充展示字段，不参与信号计算。
+    ///
+    /// 早前版本曾以最新单位净值为锚、用日增长率链式回推「等价复权净值」。该序列随
+    /// 权益基金长期上行，最新点几乎恒处 252 日窗口高位 → 评分长期偏高 → 反复触发
+    /// 卖出区（如 010011 全量历史约 79 次）。改为单位净值后，评分围绕中枢震荡，
+    /// 与 fund.cc.cd 一致（010011 近一年约 13 次卖出信号）。
+    ///
+    /// 当日盘中估值：当 `fund.todayRate` 有限、今日日期晚于最新净值日、
+    /// 与最近净值的偏差 < 15% 时，把 `lastNav × (1 + todayRate/100)` 拼为
+    /// 序列最后一个点，让信号对当天涨跌敏感（与参考站行为一致）。
+    private var bandSignalAdjustedSeries: [BandSeriesPoint] {
+        let raw = netValueSourcePoints.filter { $0.value.isFinite && $0.value > 0 }
+        guard !raw.isEmpty else { return [] }
+
+        var result: [BandSeriesPoint] = []
+        result.reserveCapacity(raw.count + 1)
+        for point in raw {
+            result.append(BandSeriesPoint(
+                date: DateOnlyFormatter.string(
+                    from: Date(timeIntervalSince1970: TimeInterval(point.timestamp) / 1000)
+                ),
+                value: point.value
+            ))
+        }
+
+        // 拼接当日盘中估值（单位净值口径）
+        if let lastPoint = raw.last,
+           fund.todayRate.isFinite,
+           abs(fund.todayRate) < 15 {
+            let lastDate = DateOnlyFormatter.string(
+                from: Date(timeIntervalSince1970: TimeInterval(lastPoint.timestamp) / 1000)
+            )
+            let todayDate = DateOnlyFormatter.string(from: Date())
+            if todayDate > lastDate {
+                let estimatedNav = lastPoint.value * (1 + fund.todayRate / 100)
+                if estimatedNav.isFinite, estimatedNav > 0,
+                   abs(estimatedNav / lastPoint.value - 1) < 0.15 {
+                    result.append(BandSeriesPoint(date: todayDate, value: estimatedNav))
+                }
+            }
+        }
+        return result
+    }
+
+    /// 波段信号是否已拼接当日盘中估值（用于 Section 头部徽标）。
+    private var bandSignalHasEstimate: Bool {
+        let raw = netValueSourcePoints
+        guard let lastPoint = raw.last else { return false }
+        let lastDate = DateOnlyFormatter.string(
+            from: Date(timeIntervalSince1970: TimeInterval(lastPoint.timestamp) / 1000)
+        )
+        let todayDate = DateOnlyFormatter.string(from: Date())
+        guard todayDate > lastDate,
+              fund.todayRate.isFinite,
+              abs(fund.todayRate) < 15
+        else { return false }
+        let estimatedNav = lastPoint.value * (1 + fund.todayRate / 100)
+        return estimatedNav.isFinite
+            && estimatedNav > 0
+            && abs(estimatedNav / lastPoint.value - 1) < 0.15
+    }
+
+/// 波段信号·子栏目（决策板 + 评分走势 + 策略回测），作为趋势卡的第三个标签页内容。
+/// 卡片外框由 `trendSection` 统一提供，这里只出内容。
+private var bandSignalContent: some View {
+    BandSignalSection(
+        adjustedSeries: bandSignalAdjustedSeries,
+        withEstimate: bandSignalHasEstimate,
+        isHistoryLoading: isSupplementLoading
+    )
+    .equatable()
+}
 
     private var netValueTrendRangePicker: some View {
         HStack(spacing: 4) {
