@@ -120,6 +120,17 @@ enum TradingCalendar {
         return minutes < callAuctionStartMinutes
     }
 
+    /// 是否处于「集合竞价时段」（交易日 9:15-9:30）。
+    ///
+    /// 此阶段尚未正式开盘（`marketSessionState` 仍为 `.closed`），但盘中估值
+    /// **已经从 9:15 开始产生**。若按休市间隔处理，这 15 分钟内行情在变而状态栏不更新，
+    /// 故刷新排期需把它与开盘时段同等对待。
+    static func isCallAuctionPeriod(now: Date = .now) -> Bool {
+        guard isFundTradingDay(now) else { return false }
+        let minutes = minutesOfDay(now)
+        return minutes >= callAuctionStartMinutes && minutes < 9 * 60 + 30
+    }
+
     /// 盘中数据的「有效交易日」：
     /// - 交易日 9:15（集合竞价）之后 → 当天；
     /// - 交易日 9:15 之前、周末与节假日 → 回溯至上一交易日。
@@ -203,18 +214,18 @@ enum TradingCalendar {
         let minutes = minutesOfDay(now)
         let calendar = chinaCalendar
 
-        // 0:00 - 0:30 仍属「前一晚的净值公布尾巴」 → 唤醒时刻落在次日
-        // （此时已过零点，但留出余量等跨零点公布的净值）
-        let isLateNight = minutes < quietPeriodStartMinutes
-        // 0:30 - 9:15 → 数据已静止，唤醒时刻就在当天
-        let isEarlyMorning = minutes < callAuctionStartMinutes
+        // 0:00 - 0:30 仍属「前一晚的净值公布尾巴」：净值可能跨零点才公布，此时必须
+        // 继续按普通间隔刷新，因此**不能**返回定点唤醒时刻，直接返回 nil 交由调用方
+        // 回退到普通间隔。
+        //
+        // 修复前这里会把唤醒日设为「次日」，导致 0:00-0:30 触发刷新时直接排到次日 8:00，
+        // 中间空窗 31 小时以上，整个交易日的盘中估值与当晚净值配对全部丢失。
+        guard minutes >= quietPeriodStartMinutes else { return nil }
 
-        guard isLateNight || isEarlyMorning else { return nil }
+        // 0:30 - 9:15 → 数据已静止，按定点唤醒（8:00 / 9:00 / 9:15），唤醒时刻就在当天。
+        guard minutes < callAuctionStartMinutes else { return nil }
 
-        var day = calendar.startOfDay(for: now)
-        if isLateNight {
-            day = calendar.date(byAdding: .day, value: 1, to: day) ?? day
-        }
+        let day = calendar.startOfDay(for: now)
 
         for target in quietPeriodWakeMinutes {
             guard let wake = timeOnDay(day, minutes: target), wake > now else { continue }

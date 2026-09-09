@@ -392,6 +392,17 @@ final class StatusBarController: NSObject, ObservableObject {
     private var deactivateObserver: NSObjectProtocol?    // 应用失活时关闭面板
     private var mainPanelAnchorFrame: NSRect?           // 主面板定位所依据的状态栏按钮位置
     private var autoRefreshTimer: Timer?                // 自动刷新行情定时器
+    /// 下一次「计划」触发的绝对时刻。
+    /// 以「计划时刻」而非「上次刷新完成时刻」为基准推进，可抵消一次刷新本身的网络耗时，
+    /// 使长期平均刷新频率严格等于设置值（否则实际周期 = 间隔 + 刷新耗时，越刷越慢）。
+    private var nextAutoRefreshFireDate: Date?
+    /// 两次自动刷新之间的最小间隔，避免刷新耗时超过设置间隔时连续空转。
+    private static let minimumAutoRefreshGap: TimeInterval = 1
+    private var systemWakeObserver: NSObjectProtocol?   // 系统从睡眠唤醒的观察者
+    private var autoRefreshWatchdogTimer: Timer?        // 自动刷新看门狗（定时器静默失效时兜底自愈）
+    private var isAutoRefreshing = false                // 是否正在执行自动刷新
+    /// 看门狗的检查周期（秒）。
+    private static let autoRefreshWatchdogInterval: TimeInterval = 60
     private weak var contextMenuUpdateItem: NSMenuItem? // 右键菜单里的"更新"项
     private var contextMenuUpdateRefreshTimer: Timer?   // 右键菜单打开时刷新更新状态的定时器
     private var contextMenuUpdateAnimationFrame = 2     // 更新项动画帧计数
@@ -513,6 +524,8 @@ final class StatusBarController: NSObject, ObservableObject {
         configureStatusItem()                 // 配置菜单栏按钮
         updateStatusTitle()                   // 刷新菜单栏标题
         configureAutoRefreshTimer()           // 启动自动刷新
+        configureSystemWakeObserver()         // 监听系统唤醒：睡眠后恢复自动刷新
+        configureAutoRefreshWatchdog()        // 启动看门狗：定时器静默失效时自愈
         configureOperationReminder()          // 配置开盘提醒
         sendFundThresholdRemindersIfNeeded()  // 发送积压的阈值提醒
         refreshQuotesAndStatusTitle()         // 首屏拉取一次行情
@@ -523,6 +536,12 @@ final class StatusBarController: NSObject, ObservableObject {
         hideJDFinanceLoginPanel(reportCancellation: true)
         autoRefreshTimer?.invalidate()
         autoRefreshTimer = nil
+        autoRefreshWatchdogTimer?.invalidate()
+        autoRefreshWatchdogTimer = nil
+        if let systemWakeObserver {
+            NotificationCenter.default.removeObserver(systemWakeObserver)
+            self.systemWakeObserver = nil
+        }
         stopContextMenuUpdateRefresh(cancelPendingCheck: true)
         operationReminderScheduler.invalidate()
         removeEventMonitors()
@@ -1255,6 +1274,7 @@ final class StatusBarController: NSObject, ObservableObject {
         case .fundDetail(let fundCode):
             let view = FundDetailView(
                 store: store,
+                settingsStore: settingsStore,
                 fundCode: fundCode,
                 onBuy: { [weak self] fund in
                     self?.childPanelReturnRoute = .fundDetail(fundCode: fund.code)
@@ -2365,6 +2385,8 @@ final class StatusBarController: NSObject, ObservableObject {
     private func handleSettingsChanged() {
         updateStatusTitle()
         refreshVisiblePanels(animatedAppearance: true)
+        // 刷新频率可能被改动作废旧的计划基准，否则会沿用上一个间隔排期而"慢一拍"。
+        nextAutoRefreshFireDate = nil
         configureAutoRefreshTimer()
         configureOperationReminder()
         sendFundThresholdRemindersIfNeeded()
@@ -2377,6 +2399,8 @@ final class StatusBarController: NSObject, ObservableObject {
 
     // 拉取基金行情（及指数），刷新标题、发送阈值提醒，并通知面板数据已变
     private func refreshQuotesAndStatusTitleAsync(backfillTypes: Bool = false) async {
+        isAutoRefreshing = true
+        defer { isAutoRefreshing = false }
         await store.refreshQuotes(backfillTypes: backfillTypes)
         await refreshMarketIndexesIfNeeded()
         updateStatusTitle()
@@ -2390,20 +2414,53 @@ final class StatusBarController: NSObject, ObservableObject {
         await marketIndexStore.refresh(force: force)
     }
 
-    // 重新安排"一次性"自动刷新定时器：到点后刷新并自我重排（实现周期性刷新）
+    // 重新安排"一次性"自动刷新定时器：到点后刷新并自我重排（实现周期性刷新）。
+    // 使用 NSTimer 挂在主运行循环上：回调天然运行在 MainActor 上，与 @MainActor 隔离的
+    // StatusBarController 完全兼容，不存在跨隔离访问风险。
+    //
+    // ⚠️ 曾尝试改用 GCD DispatchSourceTimer 挂到独立后台队列以规避 App Nap 节流，
+    // 但后台队列**无法安全访问** @MainActor 的 self：强引用（`guard let self`）与读取
+    // weak 捕获（形成内层捕获时会执行 weakLoadStrong）都会命中 Swift 并发的
+    // MainActor 执行器断言（_dispatch_assert_queue_fail → SIGTRAP 崩溃）。
+    // 该方案已回退；抑制 App Nap 改由 RedFundApp 的 .userInitiated 活动断言承担。
     private func configureAutoRefreshTimer() {
         autoRefreshTimer?.invalidate()
         autoRefreshTimer = nil
 
-        let interval = nextAutoRefreshInterval()
-        let timer = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
+        let now = Date()
+        let interval = nextAutoRefreshInterval(now: now)
+
+        // 严格按设置频率排期：以「上次计划触发时刻 + 间隔」为基准。
+        // 若仍按「本次刷新完成时刻 + 间隔」排期，实际周期会变成「间隔 + 网络耗时」，
+        // 持仓越多、请求越慢，偏离设置越远——这正是"刷新不及时"的主因。
+        let scheduled = (nextAutoRefreshFireDate ?? now).addingTimeInterval(interval)
+        let fireDate: Date
+        if scheduled >= now {
+            // 正常情形：补偿掉本次刷新的耗时，准时落到下一个计划时刻。
+            fireDate = max(scheduled, now.addingTimeInterval(Self.minimumAutoRefreshGap))
+        } else {
+            // 计划时刻已落后于现在（系统挂起/长时间未触发、或跨时段切换）：
+            // 直接以当前时刻重新起算，避免"追赶式"连续刷新造成请求风暴。
+            fireDate = now.addingTimeInterval(interval)
+        }
+        nextAutoRefreshFireDate = fireDate
+
+        let delay = fireDate.timeIntervalSince(now)
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 await self.refreshQuotesAndStatusTitleAsync()
                 self.configureAutoRefreshTimer() // 刷新完成后重新排期
             }
         }
-        timer.tolerance = min(interval * 0.2, 5)
+        // 收紧容差：默认容差会让系统 coalescing 把触发时间推迟，破坏"严格按设置频率"。
+        // 容差按时段区分，兼顾"及时"与"省电"：
+        // - 开盘/集合竞价：数据在动、用户要求严格按设置频率，收紧容差（最多 1s）。
+        // - 休市/静止时段：数据不变，放宽容差让系统合并定时器（coalescing）省电，
+        //   对 30 分钟级间隔延迟几十秒完全无感知。
+        let requiresStrictTiming = TradingCalendar.marketSessionState(now: now) == .open
+            || TradingCalendar.isCallAuctionPeriod(now: now)
+        timer.tolerance = requiresStrictTiming ? min(delay * 0.05, 1) : min(delay * 0.1, 60)
         RunLoop.main.add(timer, forMode: .common)
         autoRefreshTimer = timer
     }
@@ -2417,7 +2474,7 @@ final class StatusBarController: NSObject, ObservableObject {
             if wakeInterval > 0 { return wakeInterval }
         }
 
-        let interval = settingsStore.settings.effectiveAutoRefreshInterval(now: now).seconds
+        let interval = currentRefreshIntervalSeconds(now: now)
 
         guard let boundary = TradingCalendar.nextMarketSessionBoundary(after: now) else {
             return interval
@@ -2427,6 +2484,75 @@ final class StatusBarController: NSObject, ObservableObject {
         guard boundaryInterval > 0 else { return interval }
         return min(interval, boundaryInterval)
     }
+
+    // 当前时段应使用的刷新间隔（秒）。
+    // 集合竞价（9:15-9:30）盘中估值已开始产生，须与开盘时段同等对待：
+    // 否则 marketSessionState 判其为 .closed，会用休市间隔（默认 10 分钟、用户常设 30 分钟），
+    // 导致这 15 分钟数据已在变化而状态栏不更新。
+    private func currentRefreshIntervalSeconds(now: Date) -> TimeInterval {
+        let useOpenInterval = TradingCalendar.marketSessionState(now: now) == .open
+            || TradingCalendar.isCallAuctionPeriod(now: now)
+        let value = useOpenInterval
+            ? settingsStore.settings.autoRefreshInterval
+            : settingsStore.settings.marketClosedAutoRefreshInterval
+        return value.seconds
+    }
+
+    // 监听系统从睡眠中唤醒：Mac 睡眠期间主运行循环的 NSTimer 不会触发，
+    // 且唤醒后"已错过触发时刻"的定时器并不保证补触发，结果是睡一觉起来
+    // 状态栏再也不自动刷新。唤醒后主动刷一次并重新排期即可恢复。
+    private func configureSystemWakeObserver() {
+        systemWakeObserver = NotificationCenter.default.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // 睡眠期间排的计划时刻已失真，作废后按当前时段重新计算。
+                self.nextAutoRefreshFireDate = nil
+                await self.refreshQuotesAndStatusTitleAsync()
+                self.configureAutoRefreshTimer()
+            }
+        }
+    }
+
+    // 看门狗：定期检查自动刷新是否"静默停摆"并自愈。
+    // 除系统睡眠外，App Nap、运行循环长时间阻塞等也可能让定时器不再触发。
+    private func configureAutoRefreshWatchdog() {
+        autoRefreshWatchdogTimer?.invalidate()
+        let timer = Timer(timeInterval: Self.autoRefreshWatchdogInterval, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor [weak self] in
+                await self?.recoverAutoRefreshIfStalled()
+            }
+        }
+        timer.tolerance = 10
+        RunLoop.main.add(timer, forMode: .common)
+        autoRefreshWatchdogTimer = timer
+    }
+
+    /// 若发现自动刷新停摆则补刷一次并重新排期。
+    ///
+    /// 判据用「计划触发时刻滞后了多久」而非「距上次刷新多久」：
+    /// 后者会在夜间/午休的定点唤醒长间隔下误判成停摆，从而违背"数据静止不空刷"的设计；
+    /// 而计划时刻在定点唤醒场景下是未来时刻（滞后为负），不会被误伤。
+    private func recoverAutoRefreshIfStalled() async {
+        guard !isAutoRefreshing else { return }
+        guard let fireDate = nextAutoRefreshFireDate else { return }
+
+        let now = Date()
+        let overdue = now.timeIntervalSince(fireDate)
+        let interval = nextAutoRefreshInterval(now: now)
+        // 容忍两个周期（至少 2 分钟），避免网络偏慢时被误判为停摆。
+        let threshold = max(interval * 2, 120)
+        guard overdue > threshold else { return }
+
+        nextAutoRefreshFireDate = nil
+        await refreshQuotesAndStatusTitleAsync()
+        configureAutoRefreshTimer()
+    }
+
 
     // 根据设置重新配置"交易日开盘操作提醒"：生成未来若干天的提醒请求并交给调度器
     private func configureOperationReminder() {

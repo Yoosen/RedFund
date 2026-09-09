@@ -24,6 +24,8 @@ struct AppSettings: Codable, Equatable {
     static let defaultMarketClosedAutoRefreshInterval: AutoRefreshInterval = .tenMinutes
     /// 默认菜单栏展示的指数标识。
     static let defaultMarketIndexIdentifier: MarketIndexID = .shanghaiComposite
+    /// 默认盘中走势图数据源（数据源 1：东方财富）。
+    static let defaultIntradayDataSource: IntradayDataSource = .eastmoney
 
     /// 当前设置 schema 版本，用于迁移判断。
     var settingsSchemaVersion: Int? = Self.currentSchemaVersion
@@ -59,6 +61,8 @@ struct AppSettings: Codable, Equatable {
     var betaFeaturesEnabled: Bool = false
     /// 盘中估值数据源：默认东方财富，可切换为小倍养基（需手机号+验证码登录）。
     var quoteValuationSource: QuoteValuationSource = .eastmoney
+    /// 盘中走势图默认展示的估值数据源；默认数据源 1（东方财富）。
+    var intradayDataSource: IntradayDataSource = Self.defaultIntradayDataSource
     /// 是否自动检查更新；关闭后启动与打开菜单时不再自动检查并提示（手动检查仍可用）。
     var autoUpdateCheckEnabled: Bool = true
     /// 已完成的新手引导版本；nil 表示尚未完成引导。
@@ -83,6 +87,7 @@ struct AppSettings: Codable, Equatable {
         defaultMarketIndexID: MarketIndexID = Self.defaultMarketIndexIdentifier,
         betaFeaturesEnabled: Bool = false,
         quoteValuationSource: QuoteValuationSource = .eastmoney,
+        intradayDataSource: IntradayDataSource = Self.defaultIntradayDataSource,
         autoUpdateCheckEnabled: Bool = true,
         completedOnboardingVersion: Int? = nil
     ) {
@@ -103,6 +108,7 @@ struct AppSettings: Codable, Equatable {
         self.defaultMarketIndexID = defaultMarketIndexID
         self.betaFeaturesEnabled = betaFeaturesEnabled
         self.quoteValuationSource = quoteValuationSource
+        self.intradayDataSource = intradayDataSource
         self.autoUpdateCheckEnabled = autoUpdateCheckEnabled
         self.completedOnboardingVersion = completedOnboardingVersion
     }
@@ -126,6 +132,7 @@ struct AppSettings: Codable, Equatable {
         case defaultMarketIndexID
         case betaFeaturesEnabled
         case quoteValuationSource
+        case intradayDataSource
         case autoUpdateCheckEnabled
         case completedOnboardingVersion
     }
@@ -184,6 +191,10 @@ struct AppSettings: Codable, Equatable {
             forKey: .quoteValuationSource
         ) ?? .eastmoney
         autoUpdateCheckEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoUpdateCheckEnabled) ?? true
+        intradayDataSource = try container.decodeIfPresent(
+            IntradayDataSource.self,
+            forKey: .intradayDataSource
+        ) ?? Self.defaultIntradayDataSource
         if container.contains(.completedOnboardingVersion) {
             completedOnboardingVersion = try container.decodeIfPresent(
                 Int.self,
@@ -562,6 +573,40 @@ enum QuoteValuationSource: String, Codable, CaseIterable, Identifiable, Equatabl
             "使用天天基金估值接口获取盘中估值。"
         case .xiaobei:
             "使用小倍养基估值接口，需先用手机号+验证码登录。"
+        }
+    }
+}
+
+/// 盘中走势图展示的估值数据源。
+///
+/// 仅决定「盘中预估实时涨跌」走势图用哪一家的估值曲线，**同一时刻只展示一个数据源**；
+/// 不改变持仓批量刷新、净值口径与收益计算。
+enum IntradayDataSource: String, Codable, CaseIterable, Identifiable, Equatable {
+    /// 数据源 1：东方财富——跟随持仓刷新实时累积的盘中采样点。
+    case eastmoney
+    /// 数据源 2：新浪——按需拉取的当日完整分时曲线。
+    case sina
+
+    /// 用作 Identifiable 的稳定标识。
+    var id: String { rawValue }
+
+    /// 数据源中文标题。
+    var title: String {
+        switch self {
+        case .eastmoney:
+            "数据源1（东财）"
+        case .sina:
+            "数据源2（新浪）"
+        }
+    }
+
+    /// 数据源详细说明文案。
+    var detail: String {
+        switch self {
+        case .eastmoney:
+            "跟随持仓刷新实时累积，覆盖全部持仓基金，为默认数据源。"
+        case .sina:
+            "分时曲线更完整，但覆盖率有限；只在查看某只基金时按需请求，不参与批量刷新。"
         }
     }
 }

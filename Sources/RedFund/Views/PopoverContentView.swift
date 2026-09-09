@@ -5947,6 +5947,8 @@ private struct EstimationBucket: Identifiable {
 
 struct FundDetailView: View {
     let store: PortfolioStore
+    /// 设置仓库：仅用于读取「盘中走势数据源」的全局默认值。
+    let settingsStore: AppSettingsStore
     private let fundCode: String
     let onBuy: (FundPosition) -> Void
     let onSell: (FundPosition) -> Void
@@ -5971,12 +5973,24 @@ struct FundDetailView: View {
     @State private var fetchedSupplementSlots: Set<String> = []
     @State private var trendTab: FundDetailTrendTab = .intraday
     @State private var netValueTrendRange: FundNetValueTrendRange = .threeMonths
+    /// 数据源 2（新浪）的当日分时曲线。
+    ///
+    /// 新浪接口**不支持批量**（多代码返回空），只能逐只请求，因此绝不能进入
+    /// 持仓批量刷新路径——只在用户把本页数据源切到「数据源2（新浪）」时才拉取，
+    /// 由 `SinaQuoteService` 内部的进程缓存 + 落盘 + 第二个交易日清除兜底重复开关的场景。
+    @State private var sinaIntradayPoints: [FundIntradayRatePoint] = []
+    /// 本页当前展示的盘中数据源；进入详情页时取全局设置作为初始值。
+    /// 走势图同一时刻只展示一个数据源，单只基金的切换不写回全局设置。
+    @State private var intradayDataSource: IntradayDataSource = .eastmoney
+    /// 新浪请求进行中（用于区分「加载中」与「该基金确无数据源2」）。
+    @State private var isLoadingSinaPoints = false
     @Environment(\.colorScheme) private var colorScheme
 
     private let supplementService = FundQuoteService()
 
     init(
         store: PortfolioStore,
+        settingsStore: AppSettingsStore,
         fundCode: String,
         onBuy: @escaping (FundPosition) -> Void,
         onSell: @escaping (FundPosition) -> Void,
@@ -5988,6 +6002,7 @@ struct FundDetailView: View {
         onClose: @escaping () -> Void
     ) {
         self.store = store
+        self.settingsStore = settingsStore
         self.fundCode = fundCode
         self.onBuy = onBuy
         self.onSell = onSell
@@ -6089,6 +6104,16 @@ struct FundDetailView: View {
                 supplement = cached
                 didLoadSupplement = true
             }
+            // 换基金时清空数据源 2，避免沿用上一只基金的曲线。
+            sinaIntradayPoints = []
+            // 以全局设置为本页数据源的初始值；之后在本页切换只影响本页。
+            // 兜底：即使设置里残留不可用的数据源（如已关闭的新浪），也回落到东财，
+            // 避免 UI 已隐藏却仍在请求该数据源。
+            intradayDataSource = FeatureAvailability.resolvedIntradayDataSource(
+                settingsStore.settings.intradayDataSource
+            )
+            // 新浪仅在本页数据源切到「数据源2」时才请求，放在重仓请求之前以优先呈现走势图。
+            await loadSinaIntradayPointsIfNeeded()
             await loadSupplement()
             // 跨过目标时点（普通基金 15:00 / QDII 08:00）时自动补充一次重仓涨跌幅。
             // 详情页关闭后 .task 自动取消，sleep 到点后不会执行，无需手动停止。
@@ -6102,6 +6127,12 @@ struct FundDetailView: View {
                     break
                 }
                 await loadSupplement()
+            }
+        }
+        // 本页切换数据源时：切到数据源 2（新浪）才按需拉取，切回数据源 1 不产生任何请求。
+        .onChange(of: intradayDataSource) { _, _ in
+            Task {
+                await loadSinaIntradayPointsIfNeeded()
             }
         }
         // 用户主动点击刷新（主面板手动刷新完成）时，无论当前是否交易时段，都强制补充拉取十大重仓涨跌幅。
@@ -6414,21 +6445,48 @@ struct FundDetailView: View {
     }
 
     private var intradayTrendContent: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let points = displayedIntradayPoints
+        return VStack(alignment: .leading, spacing: 8) {
             sectionHeader(
                 "盘中预估实时涨跌",
                 trailing: intradayTrendTrailingText
             )
 
-            if visibleIntradayRatePoints.isEmpty {
+            // 只有一个可用数据源时无需展示切换下拉（新浪入口由 FeatureAvailability 关闭）。
+            if FeatureAvailability.availableIntradayDataSources.count > 1 {
+                intradayDataSourcePicker
+            }
+
+            if points.isEmpty {
                 emptySupplementView(intradayTrendEmptyText)
                     .frame(height: 116)
             } else {
-                FundIntradayRateChart(points: visibleIntradayRatePoints)
+                FundIntradayRateChart(points: points, source: intradayDataSource)
                     .equatable()
+                    // 切换数据源时重建图表：内部 @State 复位，从而重新播放从基准线展开的动画。
+                    .id(intradayDataSource)
                     .frame(height: 138)
             }
         }
+    }
+
+    /// 走势图当前展示的点位：同一时刻**只展示一个数据源**，避免两条曲线互相干扰。
+    private var displayedIntradayPoints: [FundIntradayRatePoint] {
+        intradayDataSource == .sina ? sinaIntradayPoints : visibleIntradayRatePoints
+    }
+
+    /// 本页数据源切换（下拉）。只影响这只基金本次查看，不写回全局设置。
+    private var intradayDataSourcePicker: some View {
+        Picker("", selection: $intradayDataSource) {
+            ForEach(FeatureAvailability.availableIntradayDataSources) { source in
+                Text(source.title).tag(source)
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .font(.system(size: 11))
+        .frame(width: 132)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private var netValueTrendContent: some View {
@@ -7185,18 +7243,22 @@ struct FundDetailView: View {
     }
 
     private var intradayTrendTrailingText: String? {
-        guard let lastPoint = visibleIntradayRatePoints.last else { return nil }
+        guard let lastPoint = displayedIntradayPoints.last else { return nil }
         return "\(MoneyFormatter.percent(lastPoint.rate, signed: true)) · \(dateText(lastPoint.timestamp, format: "HH:mm"))"
     }
 
     private var intradayTrendEmptyText: String {
+        if intradayDataSource == .sina {
+            // 新浪覆盖率有限（约 81%），部分基金本就没有该数据源。
+            return isLoadingSinaPoints ? "正在加载数据源2（新浪）盘中估值…" : "该基金暂无数据源2（新浪）的盘中估值"
+        }
         switch TradingCalendar.marketSessionState() {
         case .open:
-            "等待下一次盘中估值刷新"
+            return "等待下一次盘中估值刷新"
         case .middayBreak:
-            "午休中，盘中曲线暂停更新"
+            return "午休中，盘中曲线暂停更新"
         case .closed:
-            "休市中，盘中曲线停止更新"
+            return "休市中，盘中曲线停止更新"
         }
     }
 
@@ -7369,6 +7431,30 @@ struct FundDetailView: View {
         supplement = merged
         store.cacheSupplement(supplement, for: fund.code)
         didLoadSupplement = true
+    }
+
+    /// 按需加载数据源 2（新浪）的当日分时曲线。
+    ///
+    /// 与 `loadSupplement` 的关键区别：新浪接口不支持批量，只能逐只请求，
+    /// 因此**只在用户打开这只基金的详情页时调用一次**，不参与持仓批量刷新，
+    /// 也不跟随行情定时器。重复开关详情页由 `SinaQuoteService` 的当日缓存 + 节流兜底。
+    ///
+    /// 休市时段该曲线已定格且无新数据产生，直接跳过请求。
+    @MainActor
+    private func loadSinaIntradayPoints() async {
+        // 不在此处按交易日拦截：收盘后/非交易日仍优先读落盘，展示已定格的曲线；
+        // 真正无缓存且无交易日的场景由 SinaQuoteService 内部兜底（不发起无意义请求）。
+        sinaIntradayPoints = await SinaQuoteService.fetchIntradayRatePoints(code: fund.code)
+    }
+
+    /// 仅在本页数据源为「数据源2（新浪）」时才取数。
+    /// 默认的数据源 1（东财）走持仓批量刷新，**完全不触碰新浪接口**；
+    /// 重复切换/重复进入由 `SinaQuoteService` 的 5 分钟节流 + 落盘兜底，不会形成请求风暴。
+    private func loadSinaIntradayPointsIfNeeded() async {
+        guard intradayDataSource == .sina else { return }
+        isLoadingSinaPoints = true
+        await loadSinaIntradayPoints()
+        isLoadingSinaPoints = false
     }
 
     /// 仅刷新跟踪指数的轻量路径（静态/动态均无需重拉时）。
@@ -7943,15 +8029,25 @@ struct FundTradeRecordsPanelView: View {
 
 /// 遵循 Equatable：父级重算而点位未变时跳过 body，避免滚动中重建折线 Path。
 private struct FundIntradayRateChart: View, Equatable {
+    /// 当前展示的数据源曲线（同一时刻只展示一个数据源）。
     let points: [FundIntradayRatePoint]
+    /// 当前数据源：决定线色（数据源 2 用固定蓝，与数据源 1 的涨跌红绿区分）。
+    var source: IntradayDataSource = .eastmoney
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var hoveredIndex: Int?
 
+    /// 展开动画进度：0 = 整条线贴在 0% 基准线上，1 = 真实涨跌走势。
+    /// 纵轴范围按**真实点位**计算，因此展开过程中基准线与刻度始终不动。
+    @State private var revealProgress: CGFloat = 0
+
+    /// 展开动画时长（缓慢展开，切换数据源时不生硬）。
+    private static let revealDuration: Double = 0.9
+
     // @State 会阻止 Equatable 自动合成，手动只比较数据输入；
-    // 悬停状态/配色变化各自拥有独立的重渲染机制，不依赖父级失效。
+    // 悬停状态/展开进度各自拥有独立的重渲染机制，不依赖父级失效。
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.points == rhs.points
+        lhs.points == rhs.points && lhs.source == rhs.source
     }
 
     private static let chinaTimeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
@@ -8018,6 +8114,13 @@ private struct FundIntradayRateChart: View, Equatable {
             xAxisLabels
         }
         .accessibilityLabel("盘中预估实时涨跌走势图")
+        .onAppear {
+            // 首次出现（含切换数据源后重建）时从 0% 基准线缓慢展开到真实走势。
+            guard revealProgress < 1 else { return }
+            withAnimation(.easeInOut(duration: Self.revealDuration)) {
+                revealProgress = 1
+            }
+        }
     }
 
     private var sortedPoints: [FundIntradayRatePoint] {
@@ -8028,6 +8131,8 @@ private struct FundIntradayRateChart: View, Equatable {
         sortedPoints
     }
 
+    /// 纵轴范围按**真实点位**计算：展开动画只改变绘制位置，不参与范围计算，
+    /// 这样 0% 基准线与上下刻度在整段动画里保持固定。
     private var yAxisBounds: (min: Double, max: Double) {
         let rates = sortedPoints.map(\.rate)
         let rawMin = min(rates.min() ?? 0, 0)
@@ -8050,9 +8155,16 @@ private struct FundIntradayRateChart: View, Equatable {
         return (minValue, maxValue)
     }
 
+    /// 数据源 1 沿用涨跌红绿；数据源 2 用固定蓝，避免切换后与数据源 1 观感混淆。
     private var lineColor: Color {
-        toneColor(for: sortedPoints.last?.rate ?? 0)
+        guard source == .sina else {
+            return toneColor(for: sortedPoints.last?.rate ?? 0)
+        }
+        return Self.secondaryLineColor
     }
+
+    /// 数据源 2 的固定线色（与主线的涨跌红绿区分）。
+    static let secondaryLineColor = Color.blue
 
     private var areaFill: LinearGradient {
         LinearGradient(
@@ -8250,8 +8362,17 @@ private struct FundIntradayRateChart: View, Equatable {
     private func pointPosition(for point: FundIntradayRatePoint, in size: CGSize) -> CGPoint {
         CGPoint(
             x: xPosition(for: point, width: size.width),
-            y: yPosition(for: point.rate, height: size.height)
+            y: revealedY(for: point.rate, height: size.height)
         )
+    }
+
+    /// 展开动画中的纵坐标：以 0% 基准线为锚，按 `revealProgress` 向上下散开。
+    /// 进度为 0 时整条线贴在基准线上，进度为 1 时回到真实位置。
+    private func revealedY(for rate: Double, height: CGFloat) -> CGFloat {
+        let realY = yPosition(for: rate, height: height)
+        guard revealProgress < 1 else { return realY }
+        let baseY = yPosition(for: 0, height: height)
+        return baseY + (realY - baseY) * revealProgress
     }
 
     private func xPosition(for point: FundIntradayRatePoint, width: CGFloat) -> CGFloat {

@@ -371,6 +371,13 @@ struct SettingsView: View {
                 }
             }
 
+            // 只有一个可用数据源时无需展示选择器（新浪入口由 FeatureAvailability 关闭）。
+            if FeatureAvailability.availableIntradayDataSources.count > 1 {
+                PanelSection(title: "盘中走势数据源") {
+                    intradayDataSourceSection
+                }
+            }
+
             PanelSection(title: "实验功能") {
                 betaFeaturesSection
             }
@@ -703,6 +710,45 @@ struct SettingsView: View {
             get: { settingsStore.settings.quoteValuationSource },
             set: { source in
                 settingsStore.setQuoteValuationSource(source)
+                onSettingsChanged?()
+            }
+        )
+    }
+
+    /// 盘中走势图数据源选择：数据源1（东财）/ 数据源2（新浪）。
+    /// 走势图同一时刻只展示一个数据源；此处是全局默认值，单只基金可在详情页内单独切换。
+    private var intradayDataSourceSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Picker("", selection: intradayDataSourceBinding) {
+                ForEach(FeatureAvailability.availableIntradayDataSources) { source in
+                    Text(source.title).tag(source)
+                }
+            }
+            .pickerStyle(.segmented)
+            .focusable(false)
+
+            Text(settingsStore.settings.intradayDataSource.detail)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("走势图同一时刻只展示一个数据源。此处为全局默认值，单只基金可在详情页内单独切换（仅该次查看生效）。")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
+    /// 盘中走势数据源绑定的写入：切换后写回 settingsStore 并触发刷新。
+    private var intradayDataSourceBinding: Binding<IntradayDataSource> {
+        Binding(
+            get: { settingsStore.settings.intradayDataSource },
+            set: { source in
+                settingsStore.setIntradayDataSource(source)
                 onSettingsChanged?()
             }
         )

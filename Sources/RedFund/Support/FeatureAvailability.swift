@@ -33,4 +33,32 @@ enum FeatureAvailability {
     static func resolved(_ source: QuoteValuationSource) -> QuoteValuationSource {
         isAvailable(source) ? source : .eastmoney
     }
+
+    // MARK: - 盘中走势数据源
+
+    /// 新浪盘中走势数据源（数据源2）。
+    ///
+    /// 暂时关闭入口：详情页的切换下拉与设置页的分区都不再展示，统一使用东财的盘中走势。
+    /// 需要恢复时把这里改回 `true` 即可，其余代码无需改动。
+    static let sinaIntradayDataSource = false
+
+    /// 当前对用户开放的盘中走势数据源（按展示顺序）。
+    static var availableIntradayDataSources: [IntradayDataSource] {
+        IntradayDataSource.allCases.filter(isAvailableIntradayDataSource)
+    }
+
+    /// 指定盘中走势数据源当前是否可用。
+    static func isAvailableIntradayDataSource(_ source: IntradayDataSource) -> Bool {
+        switch source {
+        case .eastmoney:
+            true
+        case .sina:
+            sinaIntradayDataSource
+        }
+    }
+
+    /// 把不可用的盘中走势数据源回落为东财，用于读写两侧的统一兜底。
+    static func resolvedIntradayDataSource(_ source: IntradayDataSource) -> IntradayDataSource {
+        isAvailableIntradayDataSource(source) ? source : .eastmoney
+    }
 }

@@ -41,9 +41,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // 应用启动完成时调用（核心初始化入口）
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // 设为 accessory：不在 Dock 显示图标，只驻留菜单栏
-        // 菜单栏常驻应用需在后台定时刷新行情，抑制 App Nap 避免刷新定时器被系统挂起。
+        // 菜单栏常驻应用需在后台定时刷新行情，必须暴露为 userInitiated 才能有效抑制 App Nap，
+        // 否则 .background 优先级过低，系统仍会挂起主运行循环的定时器与后台网络请求。
         backgroundRefreshActivity = ProcessInfo.processInfo.beginActivity(
-            options: .background,               // 声明为后台活动
+            options: .userInitiated,            // 声明为用户预期的活动，阻止 App Nap 节流
             reason: "保持基金行情定时刷新"        // 系统展示/日志用的原因说明
         )
         UNUserNotificationCenter.current().delegate = self // 设置自己为通知中心代理，接管通知展示
