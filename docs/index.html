@@ -1,0 +1,1074 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Red Fund · 把基金持仓与收益，安静地放进 macOS 菜单栏</title>
+<meta name="description" content="Red Fund 是一款原生 macOS 菜单栏基金助手：持仓、交易、盘中估值与组合收益一眼看清。SwiftUI 原生，本地优先，无广告、无自有账号。开源 GPL-3.0。">
+<meta name="theme-color" content="#fbfbfd" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#08090c" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="assets/icon.png">
+<link rel="canonical" href="https://yoosen.github.io/RedFund/">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Red Fund">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:title" content="Red Fund · macOS 菜单栏基金助手">
+<meta property="og:description" content="把基金持仓、盘中估值与长期收益，安静地放进 macOS 菜单栏。原生 SwiftUI，本地优先，开源 GPL-3.0。">
+<meta property="og:url" content="https://yoosen.github.io/RedFund/">
+<meta property="og:image" content="https://yoosen.github.io/RedFund/assets/og-cover.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Red Fund · macOS 菜单栏基金助手">
+<meta name="twitter:description" content="把基金持仓、盘中估值与长期收益，安静地放进 macOS 菜单栏。原生 SwiftUI，本地优先，开源 GPL-3.0。">
+<meta name="twitter:image" content="https://yoosen.github.io/RedFund/assets/og-cover.png">
+
+<style>
+/* ============================================================
+   Red Fund — 宣传落地页
+   单文件、零外部依赖；配色取自应用图标（青 → 蓝 → 品红）
+   涨跌色遵循 A 股习惯：红涨 / 绿跌
+   ============================================================ */
+
+:root {
+  --bg:            #fbfbfd;
+  --bg-soft:       #f2f3f7;
+  --surface:       #ffffff;
+  --surface-2:     #f7f8fb;
+  --text:          #0b0d12;
+  --text-muted:    #5c6472;
+  --text-faint:    #8b93a1;
+  --border:        rgba(11, 13, 18, .085);
+  --border-strong: rgba(11, 13, 18, .14);
+
+  --brand-teal: #20c997;
+  --brand:      #1677ff;
+  --brand-pink: #ff5a6b;
+  --up:         #ff4d62;   /* 涨 = 红 */
+  --down:       #12b886;   /* 跌 = 绿 */
+
+  --logo-gradient: linear-gradient(135deg, #20c997 0%, #1677ff 52%, #ff5a6b 100%);
+  --surface-shadow: 0 1px 2px rgba(11, 13, 18, .05), 0 12px 32px -18px rgba(11, 13, 18, .28);
+  --surface-shadow-hover: 0 2px 4px rgba(11, 13, 18, .06), 0 22px 48px -22px rgba(11, 13, 18, .34);
+  --radius: 16px;
+  --max: 1080px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:            #08090c;
+    --bg-soft:       #0d0f14;
+    --surface:       #131519;
+    --surface-2:     #191c22;
+    --text:          #f2f3f7;
+    --text-muted:    #9aa2b1;
+    --text-faint:    #6f7787;
+    --border:        rgba(255, 255, 255, .085);
+    --border-strong: rgba(255, 255, 255, .16);
+    --surface-shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 16px 40px -20px rgba(0, 0, 0, .7);
+    --surface-shadow-hover: 0 2px 6px rgba(0, 0, 0, .55), 0 26px 56px -24px rgba(0, 0, 0, .8);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+               "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+img { max-width: 100%; display: block; }
+
+a { color: inherit; text-decoration: none; }
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.wrap { width: 100%; max-width: var(--max); margin: 0 auto; padding: 0 24px; }
+
+/* ---------- 顶部导航 ---------- */
+
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid var(--border);
+}
+
+.nav-inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 60px;
+}
+
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: -.01em; }
+.brand img { width: 28px; height: 28px; border-radius: 8px; }
+.brand span { font-size: 16px; }
+
+.nav-links { display: flex; gap: 4px; margin-left: 20px; }
+.nav-links a {
+  padding: 7px 12px;
+  border-radius: 999px;
+  font-size: 14px;
+  color: var(--text-muted);
+  transition: background .18s ease, color .18s ease;
+}
+.nav-links a:hover { background: var(--bg-soft); color: var(--text); }
+
+.nav-spacer { flex: 1 1 auto; }
+
+.nav-actions { display: flex; align-items: center; gap: 8px; }
+
+.ghost-btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  font-size: 13.5px;
+  font-weight: 550;
+  color: var(--text);
+  transition: background .18s ease, border-color .18s ease;
+}
+.ghost-btn:hover { background: var(--bg-soft); }
+.ghost-btn svg { width: 15px; height: 15px; }
+
+.nav .cta-sm {
+  padding: 8px 16px;
+  font-size: 13.5px;
+  border-radius: 999px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--logo-gradient);
+  box-shadow: 0 6px 18px -8px rgba(22, 119, 255, .7);
+  transition: transform .18s ease, box-shadow .18s ease;
+}
+.nav .cta-sm:hover { transform: translateY(-1px); box-shadow: 0 10px 24px -8px rgba(22, 119, 255, .8); }
+
+@media (max-width: 860px) {
+  .nav-links { display: none; }
+}
+
+/* ---------- Hero ---------- */
+
+.hero { position: relative; overflow: hidden; padding: 84px 0 40px; }
+
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: -30% -10% auto -10%;
+  height: 720px;
+  background:
+    radial-gradient(46% 60% at 18% 30%, color-mix(in srgb, var(--brand-teal) 30%, transparent) 0%, transparent 70%),
+    radial-gradient(50% 64% at 52% 18%, color-mix(in srgb, var(--brand) 32%, transparent) 0%, transparent 72%),
+    radial-gradient(46% 60% at 84% 32%, color-mix(in srgb, var(--brand-pink) 26%, transparent) 0%, transparent 70%);
+  filter: blur(18px);
+  opacity: .55;
+  pointer-events: none;
+}
+@media (prefers-color-scheme: dark) { .hero::before { opacity: .34; } }
+
+.hero .wrap { position: relative; z-index: 1; }
+
+.hero-head { text-align: center; max-width: 880px; margin: 0 auto; }
+
+.pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 14px 6px 10px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--surface-shadow);
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 26px;
+}
+.pill .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--brand-teal);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand-teal) 22%, transparent);
+}
+.pill b { color: var(--text); font-weight: 600; }
+
+h1 {
+  margin: 0 0 20px;
+  font-size: clamp(29px, 4.2vw, 46px);
+  line-height: 1.18;
+  font-weight: 700;
+  letter-spacing: -.025em;
+}
+
+.grad {
+  background: var(--logo-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.hero-sub {
+  margin: 0 auto 32px;
+  max-width: 620px;
+  font-size: clamp(15px, 1.7vw, 18px);
+  color: var(--text-muted);
+}
+
+.hero-cta { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-bottom: 18px; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 13px 26px;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: transform .18s ease, box-shadow .18s ease, background .18s ease, border-color .18s ease;
+}
+.btn svg { width: 17px; height: 17px; }
+
+.btn-primary {
+  color: #fff;
+  background: var(--logo-gradient);
+  box-shadow: 0 10px 30px -12px rgba(22, 119, 255, .75);
+}
+.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 18px 40px -14px rgba(22, 119, 255, .85); }
+
+.btn-secondary {
+  background: var(--surface);
+  border-color: var(--border-strong);
+  color: var(--text);
+  box-shadow: var(--surface-shadow);
+}
+.btn-secondary:hover { transform: translateY(-2px); background: var(--surface-2); }
+
+.hero-meta {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 20px;
+  font-size: 13px;
+  color: var(--text-faint);
+}
+.hero-meta span { display: inline-flex; align-items: center; gap: 6px; }
+.hero-meta svg { width: 14px; height: 14px; opacity: .8; }
+
+/* Hero 视觉：菜单栏 + 弹出面板 */
+.hero-visual {
+  margin: 54px auto 0;
+  max-width: 880px;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background:
+    radial-gradient(130% 90% at 50% 0%, color-mix(in srgb, var(--brand) 10%, transparent), transparent 62%),
+    var(--bg-soft);
+  box-shadow: var(--surface-shadow);
+  padding-bottom: 38px;
+}
+
+.menubar {
+  display: flex; align-items: center; gap: 18px;
+  height: 30px;
+  padding: 0 14px;
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  backdrop-filter: saturate(180%) blur(16px);
+  -webkit-backdrop-filter: saturate(180%) blur(16px);
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.menubar .mb-left, .menubar .mb-right { display: flex; align-items: center; gap: 16px; }
+.menubar .mb-right { margin-left: auto; }
+.menubar .mb-right .active { color: var(--text); font-weight: 600; }
+.menubar .mb-right .active em { font-style: normal; color: var(--up); }
+.menubar svg { width: 14px; height: 14px; opacity: .75; }
+
+.hero-panel { display: flex; justify-content: flex-end; padding: 0 34px; }
+.hero-panel img {
+  width: 356px;
+  height: auto;
+  margin-top: 18px;
+  border-radius: 15px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 26px 60px -30px rgba(11, 13, 18, .55), 0 2px 8px rgba(11, 13, 18, .07);
+}
+
+@media (max-width: 620px) {
+  .only-wide { display: none; }
+  .hero-panel { justify-content: center; padding: 0 18px; }
+  .hero-panel img { width: 100%; max-width: 340px; }
+  .menubar .mb-left span:nth-child(n+2) { display: none; }
+}
+
+/* ---------- 通用区块 ---------- */
+
+section { padding: 76px 0; }
+
+.eyebrow {
+  display: inline-block;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: .04em;
+  color: var(--brand);
+  margin-bottom: 12px;
+}
+
+h2 {
+  margin: 0 0 12px;
+  font-size: clamp(24px, 3.2vw, 36px);
+  line-height: 1.22;
+  font-weight: 700;
+  letter-spacing: -.02em;
+}
+
+.lead {
+  margin: 0 0 40px;
+  max-width: 640px;
+  font-size: 16.5px;
+  color: var(--text-muted);
+}
+
+.center { text-align: center; }
+.center .lead { margin-left: auto; margin-right: auto; }
+
+/* ---------- 功能卡片 ---------- */
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));
+  gap: 16px;
+}
+
+.feature {
+  padding: 22px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--surface-shadow);
+  transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+}
+.feature:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--surface-shadow-hover);
+  border-color: var(--border-strong);
+}
+
+.feature .ico {
+  width: 40px; height: 40px;
+  border-radius: 11px;
+  display: grid; place-items: center;
+  margin-bottom: 14px;
+  background: color-mix(in srgb, var(--brand) 12%, transparent);
+  color: var(--brand);
+}
+.feature:nth-child(3n+2) .ico { background: color-mix(in srgb, var(--brand-teal) 14%, transparent); color: var(--brand-teal); }
+.feature:nth-child(3n)   .ico { background: color-mix(in srgb, var(--brand-pink) 13%, transparent); color: var(--brand-pink); }
+.feature .ico svg { width: 21px; height: 21px; }
+
+.feature h3 { margin: 0 0 6px; font-size: 16px; font-weight: 640; letter-spacing: -.01em; }
+.feature p { margin: 0; font-size: 14px; color: var(--text-muted); line-height: 1.6; }
+
+.tag-new {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  vertical-align: 1px;
+  color: var(--brand-pink);
+  background: color-mix(in srgb, var(--brand-pink) 14%, transparent);
+}
+
+/* ---------- 截图 ---------- */
+
+.seg {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  margin-bottom: 30px;
+}
+.seg button {
+  border: 0;
+  cursor: pointer;
+  padding: 7px 18px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 550;
+  color: var(--text-muted);
+  background: transparent;
+  transition: background .18s ease, color .18s ease;
+}
+.seg button[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--surface-shadow);
+}
+
+.shots { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 22px; }
+
+.shot {
+  flex: 0 1 366px;
+  border-radius: 20px;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--surface-shadow);
+}
+.shot img { width: 100%; height: auto; }
+.shot figcaption {
+  padding: 12px 16px 15px;
+  font-size: 13px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.shot figcaption b { color: var(--text); font-weight: 600; }
+
+.shots-note { margin-top: 22px; text-align: center; font-size: 12.5px; color: var(--text-faint); }
+
+/* ---------- 本地优先 ---------- */
+
+.privacy {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 40px;
+  align-items: center;
+}
+@media (max-width: 820px) { .privacy { grid-template-columns: 1fr; gap: 28px; } }
+
+.privacy-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.privacy-list li { display: flex; gap: 12px; font-size: 14.5px; color: var(--text-muted); }
+.privacy-list .tick {
+  flex: 0 0 auto;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  margin-top: 2px;
+  color: #fff;
+  background: var(--logo-gradient);
+}
+.privacy-list .tick svg { width: 12px; height: 12px; }
+.privacy-list b { color: var(--text); font-weight: 600; }
+
+.code-card {
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--surface-shadow);
+  overflow: hidden;
+}
+.code-card .code-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 11px 15px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.code-card .code-head svg { width: 15px; height: 15px; }
+.code-card pre {
+  margin: 0;
+  padding: 16px 18px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* ---------- 安装 ---------- */
+
+.steps { display: grid; gap: 14px; counter-reset: step; max-width: 780px; }
+
+.step {
+  display: flex; gap: 16px;
+  padding: 18px 20px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--surface-shadow);
+}
+.step::before {
+  counter-increment: step;
+  content: counter(step);
+  flex: 0 0 auto;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 13.5px;
+  font-weight: 650;
+  color: #fff;
+  background: var(--logo-gradient);
+}
+.step h4 { margin: 0 0 4px; font-size: 15px; font-weight: 620; }
+.step p { margin: 0; font-size: 14px; color: var(--text-muted); }
+.step code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  padding: 1.5px 6px;
+  border-radius: 6px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.callout {
+  display: flex; gap: 13px;
+  max-width: 780px;
+  margin-top: 20px;
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--up) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--up) 26%, transparent);
+  font-size: 14px;
+  color: var(--text-muted);
+}
+.callout svg { flex: 0 0 auto; width: 19px; height: 19px; color: var(--up); margin-top: 1px; }
+.callout b { color: var(--text); }
+
+.copy-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.copy-row code {
+  flex: 1 1 auto;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.copy-row button {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 9px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  color: var(--brand);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  transition: background .18s ease;
+}
+.copy-row button:hover { background: var(--surface-2); }
+
+/* ---------- 常见问题 ---------- */
+
+.faq { max-width: 780px; display: grid; gap: 10px; }
+
+details.item {
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--surface-shadow);
+  overflow: hidden;
+}
+details.item summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 17px 20px;
+  font-size: 15px;
+  font-weight: 600;
+  display: flex; align-items: center; gap: 12px;
+}
+details.item summary::-webkit-details-marker { display: none; }
+details.item summary::after {
+  content: "";
+  margin-left: auto;
+  width: 9px; height: 9px;
+  border-right: 1.8px solid var(--text-faint);
+  border-bottom: 1.8px solid var(--text-faint);
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform .2s ease;
+}
+details.item[open] summary::after { transform: rotate(-135deg) translateY(-2px); }
+details.item .body { padding: 0 20px 18px; font-size: 14.5px; color: var(--text-muted); }
+
+/* ---------- 开发者带 ---------- */
+
+.dev-band {
+  border-radius: 22px;
+  padding: 34px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--surface-shadow);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 30px;
+  align-items: center;
+}
+@media (max-width: 820px) { .dev-band { grid-template-columns: 1fr; padding: 26px; } }
+.dev-band h3 { margin: 0 0 8px; font-size: 20px; font-weight: 660; letter-spacing: -.015em; }
+.dev-band p { margin: 0; font-size: 14.5px; color: var(--text-muted); }
+.badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.badges img { height: 22px; }
+
+/* ---------- 页脚 ---------- */
+
+footer { border-top: 1px solid var(--border); background: var(--bg-soft); padding: 56px 0 40px; }
+
+.foot-grid {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr 1fr 1fr;
+  gap: 32px;
+}
+@media (max-width: 820px) { .foot-grid { grid-template-columns: 1fr 1fr; gap: 26px; } }
+
+.foot-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-weight: 650; }
+.foot-brand img { width: 26px; height: 26px; border-radius: 7px; }
+.foot-col h5 { margin: 0 0 12px; font-size: 13px; font-weight: 650; letter-spacing: .02em; color: var(--text); }
+.foot-col ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
+.foot-col a { font-size: 13.5px; color: var(--text-muted); transition: color .18s ease; }
+.foot-col a:hover { color: var(--brand); }
+
+.foot-note {
+  margin-top: 34px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--text-faint);
+}
+.foot-note b { color: var(--text-muted); }
+.foot-bottom {
+  margin-top: 20px;
+  display: flex; flex-wrap: wrap; gap: 8px 20px;
+  align-items: center;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+.foot-bottom .sp { flex: 1 1 auto; }
+</style>
+</head>
+<body>
+
+<!-- ============ 导航 ============ -->
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top">
+      <img src="assets/icon.svg" alt="Red Fund 应用图标">
+      <span>Red Fund</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#features">功能</a>
+      <a href="#screens">界面</a>
+      <a href="#privacy">隐私</a>
+      <a href="#install">安装</a>
+      <a href="#faq">常见问题</a>
+    </nav>
+    <span class="nav-spacer"></span>
+    <div class="nav-actions">
+      <a class="ghost-btn" href="https://github.com/Yoosen/RedFund" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2.01-.27c.68 0 1.36.09 2.01.27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+      <a class="cta-sm" href="https://github.com/Yoosen/RedFund/releases/latest" target="_blank" rel="noopener">下载</a>
+    </div>
+  </div>
+</header>
+
+<!-- ============ Hero ============ -->
+<main id="top">
+<section class="hero">
+  <div class="wrap">
+    <div class="hero-head">
+      <span class="pill"><span class="dot"></span>开源 · <b>GPL-3.0</b> · 原生 SwiftUI</span>
+
+      <h1>把基金持仓、盘中估值与长期收益，<br class="only-wide">安静地放进<span class="grad">菜单栏</span></h1>
+
+      <p class="hero-sub">
+        没有自有账号，没有云端后台，没有广告。打开菜单栏，一眼看清今天赚了多少、
+        手里哪些基金在涨、哪只在拖后腿。
+      </p>
+
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="https://github.com/Yoosen/RedFund/releases/latest" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+          下载最新版
+        </a>
+        <a class="btn btn-secondary" href="https://github.com/Yoosen/RedFund" target="_blank" rel="noopener">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2.01-.27c.68 0 1.36.09 2.01.27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+          在 GitHub 上查看
+        </a>
+      </div>
+
+      <div class="hero-meta">
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h20v12H2z"/><path d="M8 20h8"/></svg>macOS 14 Sonoma 或更高</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>Apple Silicon（M1 及以上）</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 6v6c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V6l-8-4Z"/></svg>本地优先 · 无需登录</span>
+      </div>
+    </div>
+
+    <!-- 菜单栏 + 面板 -->
+    <div class="hero-visual">
+      <div class="menubar" aria-hidden="true">
+        <div class="mb-left">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.4 12.7c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.9-3-.8c-1.5 0-2.9.9-3.7 2.3-1.6 2.7-.4 6.8 1.1 9 .8 1.1 1.7 2.3 2.9 2.2 1.2 0 1.6-.7 3-.7s1.8.7 3 .7 2-1.1 2.8-2.2c.9-1.2 1.2-2.4 1.3-2.5-.1 0-2.5-1-2.5-3.6ZM14.2 5.6c.6-.8 1.1-1.9 1-3-.9.1-2 .6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2-.5 2.7-1.3Z"/></svg>
+          <span>访达</span>
+          <span>文件</span>
+          <span>编辑</span>
+        </div>
+        <div class="mb-right">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 12.5a7 7 0 0 1 14 0"/><path d="M8.5 15a3.5 3.5 0 0 1 7 0"/><path d="M12 18h.01"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="7" width="17" height="10" rx="3"/><path d="M22 11v2"/></svg>
+          <span class="active">Red Fund &nbsp;<em>+256.00</em> &nbsp;+3.20%</span>
+        </div>
+      </div>
+      <div class="hero-panel">
+        <picture>
+          <source srcset="assets/list-dark.png" media="(prefers-color-scheme: dark)">
+          <img src="assets/list-light.png" width="406" height="726" alt="Red Fund 菜单栏面板：持仓列表与今日涨幅">
+        </picture>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 功能 ============ -->
+<section id="features">
+  <div class="wrap">
+    <span class="eyebrow">核心功能</span>
+    <h2>一个菜单栏，装下你的整个基金账本</h2>
+    <p class="lead">从记录一笔加仓，到看清组合的长期收益曲线。Red Fund 把日常真正会用的部分做扎实，不做花架子。</p>
+
+    <div class="feature-grid">
+      <article class="feature">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="3"/><path d="M6 9h5"/><path d="M6 13h2"/><path d="M17 9h1"/></svg></div>
+        <h3>菜单栏速览</h3>
+        <p>显示组合今日收益、收益率或简洁图标，支持红绿涨跌色与系统单色，随手一眼就知道今天怎么样。</p>
+      </article>
+
+      <article class="feature">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H3z"/><path d="M3 7V5a2 2 0 0 1 2-2h10v4"/><path d="M16 13h2"/></svg></div>
+        <h3>持仓与交易</h3>
+        <p>按金额或份额维护持仓，记录加仓、减仓、基金转换和待确认操作，成本与持有天数自动算清楚。</p>
+      </article>
+
+      <article class="feature">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l4-6 4 3 4-7 4 4"/><path d="M3 21h18"/></svg></div>
+        <h3>行情与估值</h3>
+        <p>官方净值、盘中估值、更新时间、市场指数与全市场涨跌概览，历史估值偏差还会自动统计成准确率。</p>
+      </article>
+
+      <article class="feature">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13a9 9 0 0 1 18 0"/><path d="M12 13l3.5-3.5"/><path d="M4 19h16"/></svg></div>
+        <h3>波段信号<span class="tag-new">新</span></h3>
+        <p>五项指标归一加权成 0–1 评分，划分高位/低位区间与七档操作建议，并附上策略回测的胜率与超额收益。</p>
+      </article>
+
+      <article class="feature">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg></div>
+        <h3>收益分析</h3>
+        <p>今日与持仓收益排行、累计收益曲线、每日盈亏日历——赚在哪天、亏在哪笔，都有据可查。</p>
+      </article>
+
+      <article class="feature">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11A8 8 0 0 0 6.3 6"/><path d="M4 13a8 8 0 0 0 13.7 5"/><path d="M20 5v6h-6"/><path d="M4 19v-6h6"/></svg></div>
+        <h3>京东金融可选同步</h3>
+        <p>用户主动登录后，先预览差异、再同步持仓、交易与历史收益。登录完全可选，且可以随时退出。</p>
+      </article>
+
+      <article class="feature">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></div>
+        <h3>刷新与提醒</h3>
+        <p>区分交易与休市时段自动刷新；支持每日提醒与涨跌档位通知，重要波动不会被错过。</p>
+      </article>
+
+      <article class="feature">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></div>
+        <h3>本地数据管理</h3>
+        <p>持仓导入、导出、旧版迁移、会话清理与本地数据删除一应俱全，账本始终握在自己手里。</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 界面 ============ -->
+<section id="screens">
+  <div class="wrap center">
+    <span class="eyebrow">界面</span>
+    <h2>干净、克制，跟着系统主题走</h2>
+    <p class="lead">原生 SwiftUI 绘制，自动适配浅色与深色模式。下面是两套主题下的持仓列表与基金详情。</p>
+
+    <div class="seg" role="group" aria-label="切换界面预览主题">
+      <button type="button" data-theme="light" aria-pressed="true">浅色</button>
+      <button type="button" data-theme="dark" aria-pressed="false">深色</button>
+    </div>
+
+    <div class="shots">
+      <figure class="shot">
+        <img data-light="assets/list-light.png" data-dark="assets/list-dark.png"
+             src="assets/list-light.png" width="406" height="726"
+             alt="持仓列表界面">
+        <figcaption><b>持仓列表</b> · 今日涨幅、仓位与收益一目了然</figcaption>
+      </figure>
+      <figure class="shot">
+        <img data-light="assets/detail-light.png" data-dark="assets/detail-dark.png"
+             src="assets/detail-light.png" width="406" height="706"
+             alt="基金详情界面">
+        <figcaption><b>基金详情</b> · 盘中估值走势、历史净值与交易记录</figcaption>
+      </figure>
+    </div>
+
+    <p class="shots-note">以上截图使用完全虚构的示例组合，不包含任何真实持仓数据。</p>
+  </div>
+</section>
+
+<!-- ============ 隐私 ============ -->
+<section id="privacy">
+  <div class="wrap">
+    <div class="privacy">
+      <div>
+        <span class="eyebrow">本地优先</span>
+        <h2>你的持仓，只留在你自己的 Mac 上</h2>
+        <p class="lead" style="margin-bottom:26px">没有自有账号，没有云同步，也没有数据后台。Red Fund 不收集、不上传你的账本。</p>
+
+        <ul class="privacy-list">
+          <li><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7"/></svg></span><span><b>无账号、无云同步</b>——无需注册，数据默认只保存在当前这台 Mac。</span></li>
+          <li><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7"/></svg></span><span><b>无广告、无分析 SDK</b>——不埋点、不跟踪、不推送推广。</span></li>
+          <li><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7"/></svg></span><span><b>随时可整体导出</b>——持仓可在应用内导入导出，换机前备份目录即可。</span></li>
+          <li><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7"/></svg></span><span><b>京东同步仅在你主动操作时运行</b>——Cookie 不会发往 Red Fund 自有的任何服务器。</span></li>
+        </ul>
+      </div>
+
+      <div class="code-card">
+        <div class="code-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          数据只写进这个目录
+        </div>
+        <pre>~/Library/Application Support/red-fund/
+├── portfolio.json
+├── settings.json
+└── portfolio-performance.json</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 安装 ============ -->
+<section id="install">
+  <div class="wrap">
+    <span class="eyebrow">安装</span>
+    <h2>三十秒装好，从菜单栏开始</h2>
+    <p class="lead">仅支持 macOS 14 Sonoma 或更高版本，以及 Apple Silicon（M1 及以上）芯片。</p>
+
+    <div class="steps">
+      <div class="step">
+        <div>
+          <h4>下载安装包</h4>
+          <p>打开 <a href="https://github.com/Yoosen/RedFund/releases/latest" target="_blank" rel="noopener" style="color:var(--brand)">Latest Release</a>，下载文件名以 <code>arm64-swift.dmg</code> 结尾的安装包。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h4>拖入「应用程序」</h4>
+          <p>打开 DMG，把 <code>RedFund.app</code> 拖进「应用程序」文件夹。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h4>首次打开</h4>
+          <p>若被系统拦截，在 Finder 中按住 Control 单击 RedFund，选择「打开」，再在弹窗里点一次「打开」。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h4>完成</h4>
+          <p>在菜单栏找到 Red Fund 图标即可开始使用。应用不会在 Dock 常驻。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+      <div>
+        <p><b>关于没有 Apple 开发者签名的说明。</b>发布包未经过 Apple 公证，macOS 的 Gatekeeper 会拦截首次打开。若提示应用「已损坏，无法打开」，可在终端清除下载隔离标记：</p>
+        <div class="copy-row">
+          <code id="xattrCmd">xattr -cr /Applications/RedFund.app</code>
+          <button type="button" id="copyBtn">复制</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 常见问题 ============ -->
+<section id="faq">
+  <div class="wrap">
+    <span class="eyebrow">常见问题</span>
+    <h2>你可能想知道的</h2>
+    <p class="lead">更多说明见仓库中的<a href="https://github.com/Yoosen/RedFund/blob/main/PRIVACY.md" target="_blank" rel="noopener" style="color:var(--brand)">隐私政策与免责声明</a>。</p>
+
+    <div class="faq">
+      <details class="item" open>
+        <summary>盘中估值为什么和销售平台或晚间净值不同？</summary>
+        <div class="body">盘中估值依赖第三方公开数据与基金披露持仓，更新时间和计算口径可能不同。正式核对请以基金管理人公布的净值，以及你自己的交易确认记录为准。</div>
+      </details>
+      <details class="item">
+        <summary>京东金融登录是必需的吗？</summary>
+        <div class="body">不是。手工维护持仓、行情展示、菜单栏显示与本地收益记录都可以独立使用。京东登录只用于你主动选择的数据同步。</div>
+      </details>
+      <details class="item">
+        <summary>换一台 Mac 后数据会自动同步吗？</summary>
+        <div class="body">不会。Red Fund 没有自有云同步。请先导出持仓，并按需备份 <code>~/Library/Application Support/red-fund</code> 目录，再迁移到新设备。</div>
+      </details>
+      <details class="item">
+        <summary>是开源的吗？我可以自己编译吗？</summary>
+        <div class="body">是。项目以 GPL-3.0 许可开源，克隆仓库后运行 <code>swift build</code> 与 <code>swift test</code> 即可构建和测试，<code>npm run dev</code> 可一键构建并启动本地应用。</div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 开发者 ============ -->
+<section>
+  <div class="wrap">
+    <div class="dev-band">
+      <div>
+        <h3>开源、可自建、欢迎贡献</h3>
+        <p>一个安静的小工具，也是一份读得懂的代码。欢迎提交可复现的问题、范围明确的建议，以及聚焦的 Pull Request。</p>
+        <div class="badges">
+          <a href="https://github.com/Yoosen/RedFund/releases/latest" target="_blank" rel="noopener"><img src="https://img.shields.io/github/v/release/Yoosen/RedFund?display_name=tag&amp;sort=semver&amp;style=flat-square&amp;label=Release&amp;color=ff5968" alt="最新版本"></a>
+          <img src="https://img.shields.io/badge/macOS-14%2B-111827?style=flat-square&amp;logo=apple&amp;logoColor=white" alt="macOS 14+">
+          <a href="https://github.com/Yoosen/RedFund/actions/workflows/test.yml" target="_blank" rel="noopener"><img src="https://img.shields.io/github/actions/workflow/status/Yoosen/RedFund/test.yml?branch=main&amp;style=flat-square&amp;label=CI" alt="CI 状态"></a>
+          <a href="https://github.com/Yoosen/RedFund/blob/main/LICENSE" target="_blank" rel="noopener"><img src="https://img.shields.io/github/license/Yoosen/RedFund?style=flat-square&amp;label=License" alt="许可证"></a>
+        </div>
+      </div>
+      <div class="code-card">
+        <div class="code-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m8 6-6 6 6 6"/><path d="m16 6 6 6-6 6"/></svg>
+          从源码开始
+        </div>
+        <pre>git clone https://github.com/Yoosen/RedFund.git
+cd RedFund
+swift build
+swift test
+npm run dev   # 构建并启动本地应用</pre>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+
+<!-- ============ 页脚 ============ -->
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <div class="foot-brand"><img src="assets/icon.svg" alt="">Red Fund</div>
+        <p style="margin:0;font-size:13.5px;color:var(--text-muted);max-width:280px">
+          把基金持仓、盘中估值与长期收益，安静地放进 macOS 菜单栏。
+        </p>
+      </div>
+      <div class="foot-col">
+        <h5>产品</h5>
+        <ul>
+          <li><a href="#features">核心功能</a></li>
+          <li><a href="#screens">界面预览</a></li>
+          <li><a href="https://github.com/Yoosen/RedFund/releases/latest" target="_blank" rel="noopener">下载最新版</a></li>
+          <li><a href="https://github.com/Yoosen/RedFund/blob/main/.release-notes/archive.md" target="_blank" rel="noopener">更新记录</a></li>
+        </ul>
+      </div>
+      <div class="foot-col">
+        <h5>资源</h5>
+        <ul>
+          <li><a href="https://github.com/Yoosen/RedFund#readme" target="_blank" rel="noopener">README</a></li>
+          <li><a href="https://github.com/Yoosen/RedFund/blob/main/PRIVACY.md" target="_blank" rel="noopener">隐私政策</a></li>
+          <li><a href="https://github.com/Yoosen/RedFund/blob/main/LICENSE" target="_blank" rel="noopener">GPL-3.0 许可证</a></li>
+        </ul>
+      </div>
+      <div class="foot-col">
+        <h5>社区</h5>
+        <ul>
+          <li><a href="https://github.com/Yoosen/RedFund/stargazers" target="_blank" rel="noopener">点亮 Star</a></li>
+          <li><a href="https://github.com/Yoosen/RedFund/issues" target="_blank" rel="noopener">问题与建议</a></li>
+          <li><a href="https://linux.do/" target="_blank" rel="noopener">Linux.do</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="foot-note">
+      <b>免责声明：</b>Red Fund 是个人基金记录与信息展示工具，不连接券商执行交易，也不构成任何投资建议、要约或招揽。
+      盘中估值来自第三方公开数据，可能延迟、缺失或与最终官方净值不同。投资决策及损失由使用者自行承担。
+      正式收益核对请以基金管理人公布的净值与销售平台确认记录为准。<br>
+      本项目基于 <a href="https://github.com/iamzjt-front-end/fund-pulse" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:underline">iamzjt-front-end/fund-pulse</a> 二次开发，本仓库版本与其相互独立。
+    </div>
+
+    <div class="foot-bottom">
+      <span>© <span id="year">2026</span> Red Fund</span>
+      <span>GPL-3.0</span>
+      <span class="sp"></span>
+      <span>Made for a calmer macOS menu bar.</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  // 截图主题切换（浅色 / 深色）
+  var seg = document.querySelector('.seg');
+  if (seg) {
+    seg.addEventListener('click', function (e) {
+      var btn = e.target.closest('button[data-theme]');
+      if (!btn) return;
+      var theme = btn.dataset.theme;
+      seg.querySelectorAll('button').forEach(function (b) {
+        b.setAttribute('aria-pressed', String(b === btn));
+      });
+      document.querySelectorAll('.shot img[data-light]').forEach(function (img) {
+        var next = theme === 'dark' ? img.dataset.dark : img.dataset.light;
+        if (next && img.getAttribute('src') !== next) img.setAttribute('src', next);
+      });
+    });
+  }
+
+  // 复制 xattr 命令
+  var copyBtn = document.getElementById('copyBtn');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', function () {
+      var text = document.getElementById('xattrCmd').textContent.trim();
+      var done = function () {
+        copyBtn.textContent = '已复制';
+        setTimeout(function () { copyBtn.textContent = '复制'; }, 1600);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, done);
+      } else {
+        var ta = document.createElement('textarea');
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); } catch (err) {}
+        document.body.removeChild(ta); done();
+      }
+    });
+  }
+
+  // 页脚年份
+  var y = document.getElementById('year');
+  if (y) y.textContent = String(new Date().getFullYear());
+})();
+</script>
+</body>
+</html>

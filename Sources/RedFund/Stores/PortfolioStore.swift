@@ -274,6 +274,11 @@ final class PortfolioStore {
     private var lastQuotePersistAt: Date?
     /// 存在因节流而尚未落盘的快照变更（退出前/收盘时需补写）。
     private var hasPendingQuotePersist = false
+    /// 最近一次行情刷新后，当日活跃持仓是否已**全部确认官方净值**。
+    ///
+    /// 供休市排期降频使用：当晚净值已拿全后继续按休市间隔密集轮询没有收益，可降为低频等待次日。
+    /// 无法判定（无活跃持仓/行情缺失/全部滞后）时为 false，保持常规轮询。
+    private(set) var isTodayQuotesFullyConfirmed = false
 
     /// 持仓加载状态：加载中 / 已加载 / 缺失明文数据 / 失败。
     enum LoadState: Equatable {
@@ -4171,6 +4176,13 @@ final class PortfolioStore {
     private func persistSnapshotAfterQuoteRefresh(_ snapshot: PortfolioSnapshot) async throws {
         let now = nowProvider()
 
+        // 内容未变则无写盘必要：休市/午间/非交易日行情静止，除 `updateTime`
+        // 外快照完全一致，避免按 30s 窗口反复全量编码并原子写数百 KB 的 portfolio.json。
+        if let persistedSnapshot, persistedSnapshot.hasSameContent(as: snapshot) {
+            hasPendingQuotePersist = false
+            return
+        }
+
         if let last = lastQuotePersistAt,
            now.timeIntervalSince(last) < Self.quotePersistThrottleInterval {
             // 本次变更推迟到下一个节流窗口或退出前补写。
@@ -4202,11 +4214,15 @@ final class PortfolioStore {
         quotes: [String: FundQuote],
         now: Date
     ) {
-        guard let allQuotesConfirmed = PortfolioPerformanceRecorder.quoteConfirmationState(
+        let confirmation = PortfolioPerformanceRecorder.quoteConfirmationState(
             portfolio: snapshot,
             quotes: quotes,
             now: now
-        ) else { return }
+        )
+        // nil 表示「无法判定」（无活跃持仓/行情缺失/全部滞后），视为未确认以保持常规轮询。
+        isTodayQuotesFullyConfirmed = confirmation == true
+
+        guard let allQuotesConfirmed = confirmation else { return }
 
         _ = performanceStore.record(
             portfolio: snapshot,

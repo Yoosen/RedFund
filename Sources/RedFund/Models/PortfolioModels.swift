@@ -51,6 +51,22 @@ struct PortfolioSnapshot: Codable, Equatable {
 
 }
 
+extension PortfolioSnapshot {
+    /// 判断两个快照的「内容」是否一致（忽略 `updateTime`）。
+    ///
+    /// `PortfolioCalculator` 每次刷新都会用 `now` 填充 `updateTime`，因此直接
+    /// `==` 永远不相等；而行情静止时（休市/午间/非交易日）除该时间戳外其余字段完全相同。
+    /// 供落盘路径做短路判断：内容未变时跳过全量编码与写盘。
+    /// 数组字段为写时复制，此处仅复制标量与引用，代价远低于编码 + 落盘。
+    func hasSameContent(as other: PortfolioSnapshot) -> Bool {
+        var lhs = self
+        var rhs = other
+        lhs.updateTime = .distantPast
+        rhs.updateTime = .distantPast
+        return lhs == rhs
+    }
+}
+
 /// 京东金融同步状态（基线建立时间、已覆盖订单键等）。
 struct JDFinanceSyncState: Codable, Equatable {
     var schemaVersion: Int = 1

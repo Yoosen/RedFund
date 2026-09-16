@@ -131,6 +131,14 @@ enum TradingCalendar {
         return minutes >= callAuctionStartMinutes && minutes < 9 * 60 + 30
     }
 
+    /// 指数等「仅交易时段内变动」的数据是否处于活跃时段（开市或集合竞价）。
+    ///
+    /// 午休、收盘后与非交易日的指数/涨跌家数不再变化，可据此跳过无意义的指数轮询；
+    /// 集合竞价阶段虽未正式开盘，但盘面已开始变动，仍应视为活跃。
+    static func isTradingOrCallAuction(now: Date = .now) -> Bool {
+        isMarketOpen(now: now) || isCallAuctionPeriod(now: now)
+    }
+
     /// 盘中数据的「有效交易日」：
     /// - 交易日 9:15（集合竞价）之后 → 当天；
     /// - 交易日 9:15 之前、周末与节假日 → 回溯至上一交易日。
@@ -238,6 +246,28 @@ enum TradingCalendar {
     /// 不在任何静止时段则返回 nil，调用方回退到普通间隔逻辑。
     static func nextQuietWakeTime(after now: Date = .now) -> Date? {
         nextMiddayBreakWakeTime(after: now) ?? nextQuietPeriodWakeTime(after: now)
+    }
+
+    /// 非交易日（周末/节假日）的定点唤醒时刻（10:00、20:00）。
+    ///
+    /// 非交易日无行情变动（延迟公布的 QDII 净值也集中在少数时点），
+    /// 按休市间隔全天轮询没有收益，改为每日两次定点检查即可。
+    static let nonTradingDayWakeMinutes = [10 * 60, 20 * 60]
+
+    /// 非交易日的下一个定点唤醒时刻；交易日返回 nil。
+    ///
+    /// - 0:00-0:30 属「前一晚净值公布尾巴」：返回 nil 交由普通间隔，避免漏掉跨零点公布的净值。
+    /// - 当日 10:00/20:00 尚未到 → 返回下一个；
+    /// - 均已过去 → 返回下一交易日集合竞价（9:15），期间不再空刷。
+    static func nextNonTradingDayWakeTime(after now: Date = .now) -> Date? {
+        guard !isFundTradingDay(now) else { return nil }
+        guard minutesOfDay(now) >= quietPeriodStartMinutes else { return nil }
+
+        let day = chinaCalendar.startOfDay(for: now)
+        for target in nonTradingDayWakeMinutes {
+            if let wake = timeOnDay(day, minutes: target), wake > now { return wake }
+        }
+        return nextMarketSessionBoundary(after: now)
     }
 
     /// 从当前时间起，返回下一个交易时段边界（开盘/午休开始/下午开盘/收盘）。

@@ -554,8 +554,10 @@ struct AppUpdateService: Sendable {
             /usr/bin/xattr -dr com.apple.quarantine "$TARGET_APP" 2>/dev/null || true
             /usr/bin/open "$TARGET_APP"
             /bin/rm -rf "$BACKUP_APP"
-            /bin/rm -rf "$(/usr/bin/dirname "$STAGED_APP")"
             echo "red-fund updater finished: $(date)"
+            # 清理整个 Updates 暂存目录（含 zip、安装脚本、日志、解压目录）
+            STAGED_PARENT="$(/usr/bin/dirname "$STAGED_APP")"
+            /bin/rm -rf "$(/usr/bin/dirname "$STAGED_PARENT")" || true
           else
             echo "Copy failed; restoring previous app"
             /bin/rm -rf "$TARGET_APP"

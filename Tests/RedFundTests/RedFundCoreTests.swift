@@ -7573,6 +7573,121 @@ final class RedFundCoreTests: XCTestCase {
         XCTAssertFalse(store.isRefreshingQuotes)
     }
 
+    /// 内容比较应忽略 `updateTime`：行情静止时 Calculator 每轮仍会刷新该时间戳。
+    func testPortfolioSnapshotHasSameContentIgnoresUpdateTime() {
+        let base = PortfolioSnapshot.empty
+        var later = base
+        later.updateTime = base.updateTime.addingTimeInterval(300)
+        XCTAssertTrue(base.hasSameContent(as: later), "仅 updateTime 不同应视为内容一致")
+
+        later.totalAmount = 1
+        XCTAssertFalse(base.hasSameContent(as: later), "金额变化应视为内容不同")
+    }
+
+    /// 非交易日行情静止：第二次刷新即便越过 30s 节流窗口也不应重复落盘。
+    @MainActor
+    func testRefreshQuotesSkipsPersistWhenSnapshotContentUnchanged() async throws {
+        var now = try chinaDate("2026-06-28 10:00")
+        let initial = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                conversionFund(code: Self.tradeTestCode, name: Self.tradeTestName, shares: 100, cost: 1)
+            ],
+            migration: nil
+        )
+        let repository = RecordingPortfolioRepository(initialSnapshot: initial)
+        let store = PortfolioStore(
+            repository: repository,
+            quoteService: tradeQuoteService(date: "2026-06-26", netValue: 2.5),
+            now: { now }
+        )
+        store.load()
+
+        await store.refreshQuotes()
+        let countAfterFirst = repository.savedSnapshots.count
+        XCTAssertGreaterThan(countAfterFirst, 0, "首次刷新应完成一次落盘")
+
+        // 前进 60s，越过 30s 落盘节流窗口；内容未变则仍不应写盘。
+        now = try chinaDate("2026-06-28 10:01")
+        await store.refreshQuotes()
+
+        XCTAssertEqual(
+            repository.savedSnapshots.count,
+            countAfterFirst,
+            "非交易日行情静止，内容未变时不应重复落盘"
+        )
+    }
+
+    /// 交易日盘后官方净值已全部更新：应标记「当日净值全部确认」，供休市排期降频。
+    @MainActor
+    func testRefreshQuotesMarksFullyConfirmedWhenAllNetValuesCurrent() async throws {
+        let now = try chinaDate("2026-06-24 20:00")
+        let initial = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                conversionFund(code: Self.tradeTestCode, name: Self.tradeTestName, shares: 100, cost: 1)
+            ],
+            migration: nil
+        )
+        let store = PortfolioStore(
+            repository: RecordingPortfolioRepository(initialSnapshot: initial),
+            quoteService: tradeQuoteService(date: "2026-06-24", netValue: 2.5),
+            now: { now }
+        )
+        store.load()
+
+        await store.refreshQuotes()
+
+        XCTAssertTrue(
+            store.isTodayQuotesFullyConfirmed,
+            "当日官方净值已拿到时应标记为全部确认"
+        )
+    }
+
+    /// 仅有当日估值、官方净值仍是上一交易日：不应标记为全部确认。
+    @MainActor
+    func testRefreshQuotesKeepsUnconfirmedWhenOnlyEstimateAvailable() async throws {
+        let now = try chinaDate("2026-06-24 10:00")
+        let initial = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                conversionFund(code: Self.tradeTestCode, name: Self.tradeTestName, shares: 100, cost: 1)
+            ],
+            migration: nil
+        )
+        let store = PortfolioStore(
+            repository: RecordingPortfolioRepository(initialSnapshot: initial),
+            quoteService: tradeQuoteService(date: "2026-06-23", netValue: 2.5),
+            now: { now }
+        )
+        store.load()
+
+        await store.refreshQuotes()
+
+        XCTAssertFalse(
+            store.isTodayQuotesFullyConfirmed,
+            "官方净值尚未更新时不应标记为全部确认"
+        )
+    }
+
     @MainActor
     func testConcurrentRefreshesNeverOverlapNetworkPasses() async throws {
         let store = try refreshConcurrencyTestStore(prefix: "single-flight")

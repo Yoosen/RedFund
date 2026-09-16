@@ -48,7 +48,10 @@ struct BandSignalSection: View, Equatable {
     let isHistoryLoading: Bool
 
     @State private var bandRange: BandSignalRange = .oneYear
-    /// 算法结果缓存：指纹不变（如仅切换区间）时直接复用。
+    /// 全量评分序列缓存：**只随数据指纹变化**重算（O(n × 252) 的全量计算只跑一次），
+    /// 切换区间绝不触发它——这是"切区间跟手"的关键。
+    @State private var signalsCache: BandSignalsCache?
+    /// 区间相关结果缓存（裁剪 + 回测，均为 O(n) 轻量计算，按「数据指纹 + 区间」缓存）。
     @State private var computation: BandSignalComputation?
 
     nonisolated static func == (lhs: BandSignalSection, rhs: BandSignalSection) -> Bool {
@@ -66,17 +69,27 @@ struct BandSignalSection: View, Equatable {
         return "\(adjustedSeries.count)|\(first.date)|\(last.date)|\(last.value)"
     }
 
-    /// 取计算结果：命中缓存直接返回；未命中（首帧 / 数据变化 / 切换区间）同步算一次。
+    /// 取全量评分序列：命中缓存直接返回；未命中（首帧 / 数据变化）同步算一次。
+    ///
+    /// ⚠️ 判断依据**只含数据指纹，不含区间**：`computeBandSignal` 是 O(n × 252) 的逐日计算，
+    /// 若把它挂在按区间区分的缓存下，每次切换 近半年/近1年/全部 都会重跑一遍（旧实现正是如此，
+    /// 表现为"点快了不跟手"）。全量评分与区间无关，按数据缓存一次即可。
+    private func resolvedSignals() -> [BandSignalPoint] {
+        if let cached = signalsCache, cached.fingerprint == fingerprint {
+            return cached.signals
+        }
+        return computeBandSignal(adjustedSeries)
+    }
+
+    /// 取当前区间的回测结果：只做 O(n) 的裁剪与回测，绝不重跑 O(n × 252) 的评分计算。
     ///
     /// 回测按**所选区间**统计买卖信号次数（与图表展示窗口、fund.cc.cd 行为一致）：
     /// 默认近 1 年约给出 13 次卖出信号，而非全量历史累计的几十次。
-    private func resolvedComputation() -> BandSignalComputation {
-        // 指纹纳入区间：切换 近半年 / 近1年 / 全部 时需重算回测。
+    private func resolvedComputation(signals: [BandSignalPoint]) -> BandSignalComputation {
         let fp = "\(fingerprint)|\(bandRange.rawValue)"
         if let cached = computation, cached.fingerprint == fp {
             return cached
         }
-        let signals = computeBandSignal(adjustedSeries)
         let windowed = windowedSignals(from: signals)
         let windowedNav = windowedNavSeries(for: windowed)
         let backtest = windowed.isEmpty
@@ -102,29 +115,31 @@ struct BandSignalSection: View, Equatable {
     }
 
     var body: some View {
-        let result = resolvedComputation()
+        let signals = resolvedSignals()
+        let result = resolvedComputation(signals: signals)
         return VStack(alignment: .leading, spacing: 10) {
             header
             content(result)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("波段信号")
-        .task(id: fingerprint) {
-            // 把首帧 / 数据变化时算出的结果写回缓存；此后 body 求值（含切换区间）
-            // 直接命中，不再重跑 O(n×252) 的逐日计算。
-            if computation?.fingerprint != fingerprint {
-                computation = resolvedComputation()
+        // id 同时含数据指纹与区间：数据变化时重算全量评分；仅切换区间时只重算轻量的回测。
+        .task(id: "\(fingerprint)|\(bandRange.rawValue)") {
+            if signalsCache?.fingerprint != fingerprint {
+                signalsCache = BandSignalsCache(
+                    fingerprint: fingerprint,
+                    signals: computeBandSignal(adjustedSeries)
+                )
+            }
+            let key = "\(fingerprint)|\(bandRange.rawValue)"
+            if computation?.fingerprint != key {
+                computation = resolvedComputation(signals: resolvedSignals())
             }
         }
     }
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: "waveform.path.ecg")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 22, height: 22)
-                .background(BandSignalPalette.up, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             Text("波段信号")
                 .font(.system(size: 13, weight: .semibold))
             Spacer()
@@ -153,12 +168,12 @@ struct BandSignalSection: View, Equatable {
             )
         } else {
             VStack(alignment: .leading, spacing: 8) {
-                BandSignalDecisionPanel(signal: result.signals[result.signals.count - 1])
                 BandSignalChart(
                     signals: result.signals,
                     range: bandRange,
                     onRangeChange: { bandRange = $0 }
                 )
+                BandSignalDecisionPanel(signal: result.signals[result.signals.count - 1])
                 if let backtest = result.backtest {
                     BandSignalBacktestSummary(backtest: backtest)
                 }
@@ -186,6 +201,12 @@ private struct BandSignalComputation {
     let fingerprint: String
     let signals: [BandSignalPoint]
     let backtest: BandBacktest?
+}
+
+/// 全量评分序列缓存载体：指纹**只含数据**（不含区间），确保切换区间不触发 O(n × 252) 重算。
+private struct BandSignalsCache {
+    let fingerprint: String
+    let signals: [BandSignalPoint]
 }
 
 // MARK: - 配色（与站内涨色系统对齐：红涨绿跌）
@@ -371,7 +392,7 @@ private struct BandSignalChart: View {
     @State private var hoveredIndex: Int?
     @Environment(\.colorScheme) private var colorScheme
 
-    /// 重采样到固定长度，便于区间切换走「上下形变」动画。
+    /// 重采样到固定长度，保证各区间点数一致、曲线采样密度稳定。
     private static let resampleLength = 96
 
     var body: some View {
@@ -392,7 +413,12 @@ private struct BandSignalChart: View {
     }
 
     private var displayedSignals: [BandSignalPoint] {
-        guard let limit = range.dayLimit else { return signals }
+        displayedSignals(for: range)
+    }
+
+    /// 按给定区间取展示序列；不足区间长度时直接复用全量，避免多余的数组拷贝。
+    private func displayedSignals(for range: BandSignalRange) -> [BandSignalPoint] {
+        guard let limit = range.dayLimit, signals.count > limit else { return signals }
         return Array(signals.suffix(limit))
     }
 
@@ -409,9 +435,6 @@ private struct BandSignalChart: View {
         HStack(spacing: 3) {
             ForEach(BandSignalRange.allCases) { r in
                 Button {
-                    // 刻意不包 withAnimation：Canvas 的绘制内容不参与 SwiftUI 几何动画，
-                    // 包了只会让动画期间反复求值 body（重采样 + 重绘），反而更卡。
-                    // 曲线结果已按数据指纹缓存，直接切换即是最省的路径。
                     onRangeChange(r)
                 } label: {
                     Text(r.title)
@@ -421,17 +444,24 @@ private struct BandSignalChart: View {
                         .frame(height: 20)
                         .padding(.horizontal, 6)
                         .background {
-                            if range == r {
-                                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .fill(BandSignalPalette.up.opacity(colorScheme == .dark ? 0.20 : 0.12))
-                            }
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(
+                                    range == r
+                                        ? BandSignalPalette.up.opacity(colorScheme == .dark ? 0.20 : 0.12)
+                                        : PanelDesign.selectorBackground.opacity(colorScheme == .dark ? 0.50 : 0.70)
+                                )
                         }
                         .overlay {
-                            if range == r {
-                                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .stroke(BandSignalPalette.up.opacity(0.30), lineWidth: 0.6)
-                            }
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .stroke(
+                                    range == r
+                                        ? BandSignalPalette.up.opacity(0.30)
+                                        : Color.secondary.opacity(0.16),
+                                    lineWidth: 0.6
+                                )
                         }
+                        // 明确整块区域（文字 + 内边距 + 背景）都可点击，而非仅文字字形。
+                        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .focusable(false)

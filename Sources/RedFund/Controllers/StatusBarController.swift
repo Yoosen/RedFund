@@ -403,6 +403,15 @@ final class StatusBarController: NSObject, ObservableObject {
     private var isAutoRefreshing = false                // 是否正在执行自动刷新
     /// 看门狗的检查周期（秒）。
     private static let autoRefreshWatchdogInterval: TimeInterval = 60
+    /// 当日净值**全部确认**后的休市刷新间隔（秒）：数据已拿全，低频等待次日即可。
+    private static let confirmedQuotesRefreshInterval: TimeInterval = 30 * 60
+    /// A 股非交易时段指数的刷新间隔（秒）。
+    ///
+    /// 指数卡片区会展示全部指数，其中海外指数（恒生/日经/美股）在 A 股休市时仍各有时段、
+    /// 会持续变动，因此不能完全跳过；改为低频刷新（20s → 5min），兼顾时效与减少空刷。
+    private static let offHoursMarketIndexRefreshInterval: TimeInterval = 5 * 60
+    /// 上次「A 股非交易时段」刷新指数的时间（外部降频用）。
+    private var lastOffHoursMarketIndexRefreshAt: Date?
     private weak var contextMenuUpdateItem: NSMenuItem? // 右键菜单里的"更新"项
     private var contextMenuUpdateRefreshTimer: Timer?   // 右键菜单打开时刷新更新状态的定时器
     private var contextMenuUpdateAnimationFrame = 2     // 更新项动画帧计数
@@ -2411,6 +2420,23 @@ final class StatusBarController: NSObject, ObservableObject {
     // 若开启了"显示大盘指数"，则刷新指数（force=true 时忽略节流）
     private func refreshMarketIndexesIfNeeded(force: Bool = false) async {
         guard settingsStore.settings.showsMarketIndexes else { return }
+
+        // A 股开市/集合竞价：全部指数都可能变动，保持原有节奏。
+        if force || TradingCalendar.isTradingOrCallAuction() {
+            lastOffHoursMarketIndexRefreshAt = nil
+            await marketIndexStore.refresh(force: force)
+            return
+        }
+
+        // A 股非交易时段：A 股指数已静止，但指数卡片区还展示海外指数（仍各有时段、会变动），
+        // 故不跳过而是降频；尚无数据（首次启动/刚开启显示）时不做降频，尽快填充展示。
+        let now = Date()
+        if !marketIndexStore.quotes.isEmpty,
+           let last = lastOffHoursMarketIndexRefreshAt,
+           now.timeIntervalSince(last) < Self.offHoursMarketIndexRefreshInterval {
+            return
+        }
+        lastOffHoursMarketIndexRefreshAt = now
         await marketIndexStore.refresh(force: force)
     }
 
@@ -2467,6 +2493,13 @@ final class StatusBarController: NSObject, ObservableObject {
 
     // 计算下一次自动刷新的间隔：取"用户设置间隔"与"距下一个交易时段边界"的较小值，确保开盘即刷新
     private func nextAutoRefreshInterval(now: Date = .now) -> TimeInterval {
+        // 非交易日（周末/节假日）：全天改为少量定点唤醒（10:00/20:00），
+        // 避免按休市间隔空刷一整天。0:00-0:30 的净值公布尾巴由该方法返回 nil 回落到普通间隔。
+        if let wake = TradingCalendar.nextNonTradingDayWakeTime(after: now) {
+            let wakeInterval = wake.timeIntervalSince(now)
+            if wakeInterval > 0 { return wakeInterval }
+        }
+
         // 数据静止时段（午休、深夜至清晨）改为定点唤醒，避免按固定间隔反复空刷。
         // 该窗口内估值冻结，刷新拿不到新数据，却仍会触发一次全量落盘。
         if let wake = TradingCalendar.nextQuietWakeTime(after: now) {
@@ -2492,10 +2525,16 @@ final class StatusBarController: NSObject, ObservableObject {
     private func currentRefreshIntervalSeconds(now: Date) -> TimeInterval {
         let useOpenInterval = TradingCalendar.marketSessionState(now: now) == .open
             || TradingCalendar.isCallAuctionPeriod(now: now)
-        let value = useOpenInterval
-            ? settingsStore.settings.autoRefreshInterval
-            : settingsStore.settings.marketClosedAutoRefreshInterval
-        return value.seconds
+        if useOpenInterval {
+            return settingsStore.settings.autoRefreshInterval.seconds
+        }
+
+        let closedInterval = settingsStore.settings.marketClosedAutoRefreshInterval.seconds
+        // 当日净值已全部确认：当晚数据已拿全，继续按休市间隔密集轮询没有收益，降为低频等待次日。
+        if store.isTodayQuotesFullyConfirmed {
+            return max(closedInterval, Self.confirmedQuotesRefreshInterval)
+        }
+        return closedInterval
     }
 
     // 监听系统从睡眠中唤醒：Mac 睡眠期间主运行循环的 NSTimer 不会触发，

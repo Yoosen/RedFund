@@ -170,4 +170,62 @@ final class TradingCalendarIntervalTests: XCTestCase {
             "竞价时段应排到 9:30 正式开盘这一边界"
         )
     }
+
+    /// 指数等「仅交易时段内变动」的数据：只在开市或集合竞价时段活跃，
+    /// 午休/收盘后/开盘前返回 false，用于跳过非交易时段的指数空刷。
+    func testIsTradingOrCallAuctionOnlyDuringLiveWindows() {
+        XCTAssertTrue(
+            TradingCalendar.isTradingOrCallAuction(now: tradingDayAt(hour: 9, minute: 20)),
+            "集合竞价期间盘面已变动，应视为活跃"
+        )
+        XCTAssertTrue(
+            TradingCalendar.isTradingOrCallAuction(now: tradingDayAt(hour: 10, minute: 0)),
+            "上午盘应视为活跃"
+        )
+        XCTAssertTrue(
+            TradingCalendar.isTradingOrCallAuction(now: tradingDayAt(hour: 14, minute: 30)),
+            "下午盘应视为活跃"
+        )
+
+        XCTAssertFalse(
+            TradingCalendar.isTradingOrCallAuction(now: tradingDayAt(hour: 9, minute: 0)),
+            "开盘前指数未变动"
+        )
+        XCTAssertFalse(
+            TradingCalendar.isTradingOrCallAuction(now: tradingDayAt(hour: 12, minute: 0)),
+            "午休指数未变动"
+        )
+        XCTAssertFalse(
+            TradingCalendar.isTradingOrCallAuction(now: tradingDayAt(hour: 15, minute: 30)),
+            "收盘后指数未变动"
+        )
+    }
+
+    /// 非交易日（周末/节假日）：全天改为 10:00 / 20:00 两次定点唤醒，避免按休市间隔空刷一整天。
+    func testNextNonTradingDayWakeTimeUsesSparseCheckpoints() {
+        // 2026-08-30 为周日（非交易日），2026-08-31 为周一（交易日）。
+        XCTAssertEqual(
+            TradingCalendar.nextNonTradingDayWakeTime(after: date("2026-08-30 09:00:00")),
+            date("2026-08-30 10:00:00"),
+            "非交易日 9:00 应排到当日 10:00"
+        )
+        XCTAssertEqual(
+            TradingCalendar.nextNonTradingDayWakeTime(after: date("2026-08-30 12:00:00")),
+            date("2026-08-30 20:00:00"),
+            "非交易日 12:00 应排到当日 20:00"
+        )
+        XCTAssertEqual(
+            TradingCalendar.nextNonTradingDayWakeTime(after: date("2026-08-30 21:00:00")),
+            date("2026-08-31 09:15:00"),
+            "非交易日最后一次唤醒后应直接排到下一交易日集合竞价"
+        )
+        XCTAssertNil(
+            TradingCalendar.nextNonTradingDayWakeTime(after: date("2026-08-30 00:10:00")),
+            "非交易日 0:00-0:30 属净值公布尾巴，应回落到普通间隔"
+        )
+        XCTAssertNil(
+            TradingCalendar.nextNonTradingDayWakeTime(after: date("2026-08-31 10:00:00")),
+            "交易日不应触发非交易日定点"
+        )
+    }
 }
